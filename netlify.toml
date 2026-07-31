@@ -4,12 +4,19 @@
   publish = "."
   command = ""
 
-# publish = "." ships the whole folder, dev tooling included. /dev holds the
-# geometry self-check and the interpenetration auditor — not part of the site.
+# publish = "." ships the whole repo, so anything committed is served. /dev is
+# the geometry self-check and the interpenetration auditor, and CLAUDE.md is the
+# agent's working instructions — neither is part of the site.
 # force = true is required: without it Netlify serves the matching static file
 # and the rule never fires, because redirects only apply when nothing matches.
 [[redirects]]
   from = "/dev/*"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/CLAUDE.md"
   to = "/index.html"
   status = 404
   force = true
