@@ -88,6 +88,24 @@ async function init(THREE) {
   renderer.toneMappingExposure = EXP_HALL;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // The hall does not move. Neither does the sun: its position, its target and
+  // every shadow-casting object in the building are set once at build time and
+  // never touched again — the only things that animate are the camera, the
+  // (shadowless) lantern and niche spots, the dust and the clouds.
+  //
+  // three re-renders every shadow map on EVERY frame by default, so the page
+  // was re-drawing a 4096² depth pass over the whole colonnade, its mirrored
+  // floor twins and 1.6M triangles of statuary, sixty times a second, to
+  // produce an identical image each time. Measured here at 1920×1200: 26.0ms a
+  // frame with the re-pass against 17.9ms without it — 8ms of pure waste, and
+  // it predates the render work; it was in the page before any of this.
+  //
+  // So: render it on demand instead. `restageShadows()` marks the map dirty,
+  // and every event that can change what casts a shadow calls it — the six
+  // niche casts arriving async, the beyond's centrepiece arriving, and each
+  // crossing of the mirror (which swaps entire worlds in and out).
+  renderer.shadowMap.autoUpdate = false;
+  const restageShadows = () => { renderer.shadowMap.needsUpdate = true; };
 
   // Bright classical daylight in the site's own pearl: a lavender-white hall,
   // a neutral sun, and cool violet in every shadow. Nothing in the building is
@@ -254,7 +272,7 @@ async function init(THREE) {
   // Mirror bays sit at each tenet chapter's zone centre, snapped to the
   // colonnade grid inside buildHall so flanking columns frame them exactly.
   const bayZones = chapters.slice(1, 5).map((c) => (c.a + c.b) / 2);
-  const { panes, endPane, nicheKeys, nicheZs } = buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorBase, envTex, statuePromise, loadStatue });
+  const { panes, endPane, nicheKeys, nicheZs } = buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorBase, envTex, statuePromise, loadStatue, restageShadows });
 
   // The open sky above the colonnade: sunset dome, low sun, drifting clouds.
   const sky = makeSky(THREE);
@@ -272,7 +290,7 @@ async function init(THREE) {
     document.fonts.load('400 46px "Albert Sans"'),
   ]).catch(() => {}); // fallback fonts still draw
 
-  const voidWorld = buildVoid(THREE, renderer, { archGeo, paneGeo, crystal, mirrorBase, VOID_Z, envTex, statuePromise });
+  const voidWorld = buildVoid(THREE, renderer, { archGeo, paneGeo, crystal, mirrorBase, VOID_Z, envTex, statuePromise, restageShadows });
   scene.add(voidWorld.group);
 
   // ---------- scroll rig ----------
@@ -319,6 +337,7 @@ async function init(THREE) {
       scene.fog = on ? beyondFog : pearlFog;
       sun.intensity = on ? SUN_BEYOND : SUN_HALL;
       renderer.toneMappingExposure = on ? EXP_BEYOND : EXP_HALL;
+      restageShadows(); // a whole world just appeared or vanished
       flash?.classList.remove("on");
       if (!on) { hover = false; canvas.style.cursor = ""; }
     }, REDUCED ? 420 : 140);
@@ -372,6 +391,7 @@ async function init(THREE) {
   if (renderer.compileAsync) await renderer.compileAsync(scene, camera);
   else renderer.compile(scene, camera);
   voidWorld.group.visible = false;
+  restageShadows(); // first staging: nothing has drawn a shadow map yet
 
   const clock = new THREE.Clock();
   const LERP = REDUCED ? 1 : 0.07;
@@ -545,12 +565,16 @@ async function buildPost(THREE, renderer, scene, camera) {
 
   // AO is a LOW-FREQUENCY term — it is the slow darkening in a corner, and it
   // gets a poisson denoise blur of its own before it is blended — so resolving
-  // it per-pixel is work you cannot see. Measured on this scene: full-res/16
-  // samples cost 9.0ms a frame, half-res/8 costs 3.8ms for an image I could
-  // not tell apart. The AO buffers are linearly filtered, so the upsample is
-  // free and smooth. (Only the pass's normal buffer is nearest-filtered, and
-  // that one is read at its own resolution.)
-  const AO_SCALE = 0.5;
+  // it per-pixel is work you cannot see. The AO buffers are linearly filtered,
+  // so the upsample is free and smooth. (Only the pass's normal buffer is
+  // nearest-filtered, and that one is read at its own resolution.)
+  //
+  // Half was still far too generous. The pass turns out to be almost entirely
+  // fragment-bound — its geometry prepass is cheap, its shader is not — so its
+  // cost tracks the AO buffer's pixel count almost linearly. Measured at
+  // 1920×1200: half-res costs 24.0ms a frame, quarter-res 6.4ms. Four times
+  // cheaper for a term that is blurred either way.
+  const AO_SCALE = 0.25;
   let gtao = null;
   if (heavy) {
     gtao = new GTAOPass(scene, camera, W * AO_SCALE, H * AO_SCALE);
@@ -558,7 +582,11 @@ async function buildPost(THREE, renderer, scene, camera) {
     // depth of the deepest recess in the hall (a niche is 0.34, a coffer
     // field 0.10), so mouldings darken in their corners without the whole
     // colonnade smearing into a grey haze.
-    gtao.updateGtaoMaterial({ radius: 0.55, distanceExponent: 1, thickness: 1, scale: 1, samples: 8, screenSpaceRadius: false });
+    // 16 samples, not 8: at quarter resolution the pass is dominated by its
+    // fixed overhead (the normal prepass, the denoise and the full-res blend),
+    // not by the AO shader, so 8 and 16 measured identically — 20.7ms against
+    // 20.4ms, inside the noise. Free quality is worth taking.
+    gtao.updateGtaoMaterial({ radius: 0.55, distanceExponent: 1, thickness: 1, scale: 1, samples: 16, screenSpaceRadius: false });
     gtao.blendIntensity = 0.85; // present, not a charcoal drawing
     composer.addPass(gtao);
   }
@@ -641,38 +669,83 @@ async function buildPost(THREE, renderer, scene, camera) {
   });
   composer.addPass(grade);
 
-  // Adaptive AO. Viewport width is a poor proxy for a GPU — a 4K laptop on
+  // composer.setSize already forwards to every pass, so all that is left is to
+  // claw the AO buffers back down to AO_SCALE afterwards.
+  const resize = (w, h, ratio) => {
+    if (ratio) {
+      renderer.setPixelRatio(ratio);
+      renderer.setSize(w, h);
+      composer.setPixelRatio(ratio);
+    }
+    composer.setSize(w, h);
+    const p = renderer.getPixelRatio();
+    gtao?.setSize(w * p * AO_SCALE, h * p * AO_SCALE);
+  };
+  // This call is load-bearing, not boilerplate. EffectComposer.addPass ends with
+  //     pass.setSize( this._width * this._pixelRatio, … )
+  // so every pass is silently resized to the FULL frame the moment it is added
+  // — which threw away the dimensions GTAOPass was constructed with. The AO was
+  // running at full resolution the whole time and AO_SCALE did nothing; that is
+  // what made "half-res" AO cost 24ms a frame. Size it once more, last, after
+  // every addPass has had its say.
+  resize(innerWidth, innerHeight);
+
+  // Quality ladder. Viewport width is a poor proxy for a GPU — a 4K laptop on
   // integrated graphics counts as "desktop", a fast machine in a split pane
-  // does not — so the width test above only decides whether to ALLOCATE the AO
-  // buffers, and the real decision is made by measuring. Measured here, the
-  // pass costs a whole extra depth+normal render of 1.6M triangles of
-  // statuary; on a page whose entire product is a smooth scroll, a dropped
-  // frame is worse than a missing shadow. So if real frames come in over
-  // budget, the luxury pass is what goes — never the corridor. (That is the
-  // same policy as the WebGL fallback above, one level down: degrade the
-  // picture, don't hide it.)
-  let frame = 0, prev = 0, missed = 0;
-  const WARMUP = 60, WINDOW = 90; // skip boot + the six async statue loads
+  // does not — so the width test above only decides what to ALLOCATE, and the
+  // real decision is made by measuring actual delivered frames.
+  //
+  // On a page whose whole product is a smooth scroll, a dropped frame is worse
+  // than a missing shadow, so when the budget is blown the PICTURE degrades and
+  // the corridor never does — the same policy as the WebGL fallback, one level
+  // down. Rungs in order of least-missed first: the AO pass goes, then the
+  // render resolution. Each rung gets a fresh measuring window, so a machine
+  // that is still dropping frames after losing AO keeps stepping down instead
+  // of stalling on the first rung; a machine that recovers stops being watched.
+  const shed = [
+    () => {
+      if (!gtao || !gtao.enabled) return null;
+      gtao.enabled = false;
+      return "ambient occlusion";
+    },
+    () => {
+      if (renderer.getPixelRatio() <= 1.05) return null;
+      resize(innerWidth, innerHeight, 1); // 1.5 → 1.0 is 2.25× fewer fragments
+      return "resolution";
+    },
+  ];
+  let rung = 0, frame = 0, prev = 0, missed = 0;
+  // 60+90 frames meant the first step-down landed five seconds in on exactly
+  // the machine that needed it — so the hero, the one shot every visitor sees,
+  // was the laggiest thing on the page and then quietly got better once they
+  // had stopped looking. 40+50 decides in about two seconds and still counts
+  // fifty real frames against a 35% threshold, which is plenty to tell a slow
+  // GPU from a hiccup. The warm-up skips boot and the async statue loads.
+  const WARMUP = 40, WINDOW = 50, LATE = 24; // >24ms: the frame missed a vsync at 60Hz
+  const watch = () => {
+    if (rung >= shed.length) return;
+    const now = performance.now();
+    if (frame > WARMUP && prev && now - prev > LATE) missed++;
+    prev = now;
+    if (++frame < WARMUP + WINDOW) return;
+    if (missed > WINDOW * 0.35) {
+      const lost = shed[rung]();
+      if (lost) console.info(`3D corridor: dropped ${lost} to hold the frame rate.`);
+      rung++;
+    } else {
+      rung = shed.length; // holding budget — stop measuring, keep what we have
+    }
+    frame = WARMUP; // next rung measures a fresh window, no second warm-up
+    missed = 0;
+  };
+
   return {
     render(t) {
       grade.uniforms.uTime.value = t % 100;
       composer.render();
-      if (!gtao || !gtao.enabled || frame > WARMUP + WINDOW) return;
-      const now = performance.now();
-      // >24ms means the frame missed a vsync outright (60Hz lands at 16.7)
-      if (frame > WARMUP && prev && now - prev > 24) missed++;
-      prev = now;
-      if (++frame === WARMUP + WINDOW && missed > WINDOW * 0.35) {
-        gtao.enabled = false;
-        console.info("3D corridor: ambient-occlusion pass disabled to hold the frame rate.");
-      }
+      watch();
     },
-    setSize(w, h) {
-      composer.setSize(w, h);
-      const p = renderer.getPixelRatio();
-      bloom.setSize(w * p, h * p);
-      gtao?.setSize(w * p * AO_SCALE, h * p * AO_SCALE);
-    },
+    setSize: (w, h) => resize(w, h),
     dispose() { composer.dispose(); },
     composer, gtao, bloom, grade,
   };
@@ -728,7 +801,7 @@ function makePaneGeometry(THREE) {
 // and a sheet of glassy still water that ripples under the cursor. The finale
 // text floats over the water as real geometry. Returns
 // { group, hitTargets, water, addRipple, update }.
-function buildVoid(THREE, renderer, { archGeo, paneGeo, crystal, mirrorBase, VOID_Z, envTex, statuePromise }) {
+function buildVoid(THREE, renderer, { archGeo, paneGeo, crystal, mirrorBase, VOID_Z, envTex, statuePromise, restageShadows }) {
   const group = new THREE.Group();
   group.visible = false;
 
@@ -802,6 +875,7 @@ function buildVoid(THREE, renderer, { archGeo, paneGeo, crystal, mirrorBase, VOI
     reflection.position.y = -0.05;
     reflection.traverse((o) => { if (o.isMesh) o.castShadow = o.receiveShadow = false; });
     group.add(reflection);
+    restageShadows(); // the museum spot's map is on demand too
   }).catch(() => {
     // model unreachable → the crystal mirror endures on the pedestal
     const frame = new THREE.Mesh(archGeo, crystal);
@@ -1207,7 +1281,7 @@ function makeDust(THREE) {
 // single InstancedMesh, and every instance gets an automatic y-flipped twin
 // below the floor so the translucent floor reflects the entire order.
 // =========================================================================
-function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorBase, envTex, statuePromise, loadStatue }) {
+function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorBase, envTex, statuePromise, loadStatue, restageShadows }) {
   // ---- proportions (shared datums; see file header) ----
   const BAY = 2.75;           // intercolumniation
   const Z_START = 3.3;        // first column axis
@@ -1819,6 +1893,7 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
         spot.z - box.min.z,
       );
       corridor.add(st);
+      restageShadows(); // the shadow map is on demand now; this cast is new to it
     }).catch(() => {}); // figure unreachable → that niche stands as an empty alcove
   });
   // ponytail: 6 distinct scans ≈ 1.6M tris, no geometry shared between them;
