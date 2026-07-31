@@ -272,7 +272,7 @@ async function init(THREE) {
   // Mirror bays sit at each tenet chapter's zone centre, snapped to the
   // colonnade grid inside buildHall so flanking columns frame them exactly.
   const bayZones = chapters.slice(1, 5).map((c) => (c.a + c.b) / 2);
-  const { panes, endPane, nicheKeys, nicheZs } = buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorBase, envTex, statuePromise, loadStatue, restageShadows });
+  const { panes, endPane, nicheKeys, nicheZs, flame, haloMat } = buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorBase, envTex, statuePromise, loadStatue, restageShadows });
 
   // The open sky above the colonnade: sunset dome, low sun, drifting clouds.
   const sky = makeSky(THREE);
@@ -461,6 +461,14 @@ async function init(THREE) {
         // light. The veil should brighten to the crossing, not before it.
         endPane.material.emissiveIntensity = k * k * 2.3;
         endPane.material.envMapIntensity = 1.7 + k * 2.2;
+      }
+      // Torch flicker. Two incommensurable sines so it never audibly loops,
+      // and it costs two float writes for all sixteen torches — they share one
+      // material and one halo sprite, so this is the whole animation.
+      if (!REDUCED) {
+        const f = 1 + Math.sin(t * 2.6) * 0.07 + Math.sin(t * 6.1) * 0.035;
+        flame.emissiveIntensity = 1.55 * f;
+        haloMat.opacity = 0.42 * f;
       }
       dust.update(t);
       if (!REDUCED) sky.update(t);
@@ -1426,15 +1434,46 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
     clearcoat: 0.08, clearcoatRoughness: 0.7,
     envMap: envTex, envMapIntensity: 0.35, side: THREE.DoubleSide,
   });
-  // Sconce lamps: emissive orbs, points of life without real light cost. These
-  // are the ONE thing in the hall still allowed to be warm — a flame that
-  // matched the marble would not read as a flame — but they are small, sparse,
-  // and now pulled most of the way to white so they glow rather than gild. With
-  // the bloom pass in front of them they no longer need to be hot to read.
+  // Torch fire. Emissive only — sixteen real point lights would cost more than
+  // everything else in the hall put together, and the sconces never lit
+  // anything anyway; they are points of life, not a lighting rig.
+  //
+  // Lavender, and the last warm thing in the building is now gone with the
+  // orbs. A flame reads by being the brightest thing in frame rather than by
+  // being orange, so the hue is free to be the site's own: a near-white violet
+  // core that the bloom pass spreads into a lilac halo.
+  //
+  // 1.7, not 2.2: at 2.2 every channel clipped and the fire came out white with
+  // a violet rim — the one thing that was asked for was the last thing visible.
+  // Just above the bloom's 1.15 threshold the body of the flame keeps its hue
+  // and only the very core goes to white, which is what fire actually does.
+  //
+  // Additive and edge-faded, because an opaque mesh has a SILHOUETTE and fire
+  // does not. However good the profile curve was, a solid lathe against white
+  // marble cut a hard outline and read as a carved cone — a party hat. Fire is
+  // glowing gas: you see least of it where the surface turns edge-on, so fading
+  // alpha by how square-on it faces the eye dissolves that outline into a
+  // tongue of light. Four lines of shader and one blend mode, which is far
+  // cheaper than the usual answers (a particle system, or a scrolling noise
+  // texture) and holds up better at this size.
+  // color black: with additive blending the lit diffuse term would be ADDED
+  // too, so the flame must emit and nothing else.
   const flame = new THREE.MeshStandardMaterial({
-    color: 0x1a1620, emissive: 0xffeedd, emissiveIntensity: 1.5,
-    side: THREE.DoubleSide,
+    // Saturated violet, not a pale lilac. Additive light lands on white marble,
+    // and white + pale lilac is just whiter — the hue only survives if the
+    // flame is markedly stronger in blue than in red and green.
+    color: 0x000000, emissive: 0xa77dff, emissiveIntensity: 1.55,
+    side: THREE.DoubleSide, // the batcher's floor twins are mirrored
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   });
+  flame.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      "#include <dithering_fragment>",
+      `#include <dithering_fragment>
+       float rim = abs( dot( normalize( vNormal ), normalize( vViewPosition ) ) );
+       gl_FragColor.a *= smoothstep( 0.0, 0.6, rim );`,
+    );
+  };
 
   // ---- instancing batcher + placement helpers ----
   const batch = makeBatcher(THREE, corridor);
@@ -1472,9 +1511,7 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
   const keyGrandGeo = makeKeystoneGeo(THREE, 0.18, 0.27, 0.62, 0.40); // end portico
   const rosPlateGeo = new THREE.CylinderGeometry(0.155, 0.17, 0.05, 32);
   const rosRingGeo = new THREE.TorusGeometry(0.095, 0.03, 10, 32);
-  // also the sconce globe at 1.7×, and an emissive sphere shows its facets in
-  // the falloff more plainly than a lit one does
-  const rosBossGeo = new THREE.SphereGeometry(0.045, 18, 14);
+  const rosBossGeo = new THREE.SphereGeometry(0.045, 18, 14); // gilt rosette boss
   const annuletGeo = new THREE.TorusGeometry(0.262, 0.018, 10, 48);
   const bandGeo = new THREE.CylinderGeometry(1, 1, 1, 48); // unit drum, scaled per band
   const drapeGeo = makeDrapeGeo(THREE);                    // one navy hanging, baked to bay size
@@ -1498,6 +1535,41 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
       batch.place(rosRingGeo, marbleDeep, new THREE.Matrix4().compose(V.set(x, y, z + 0.045 * s), Q, S.set(s, s, s)));
       put(rosBossGeo, gold, x, y, z + 0.052 * s, s * 0.9);
     }
+  };
+
+  // ---- wall torch ----
+  // Replaces the sconces' emissive globes, which read as light bulbs on sticks:
+  // a hard white sphere on a straight gilt arm is a fitting, not a fire.
+  //
+  // A marble console carrying a turned bronze torch that leans out into the
+  // corridor, with the flame standing in its calyx. Everything here goes
+  // through the batcher, so all sixteen torches cost two draw calls between
+  // them (one for the bronze, one for the fire) and each gets its mirrored twin
+  // in the floor for free — a torch reflected in polished marble is most of
+  // what sells them.
+  const torchGeo = makeTorchGeo(THREE);
+  const flameGeo = makeFlameGeo(THREE);
+  const TORCH_TILT = 0.22;  // ~13° out of the wall; more and the calyx reaches
+                            // into the plane the drapery hangs in
+  const haloAt = [];        // flame centres, for the one shared glow sprite pass
+  const torch = (side, zs) => {
+    // Console: a block keyed into the wall and the shelf it carries. In the
+    // hall's own stone, not the deep grey the old corbel used — these sit at
+    // eye level on a white wall and a dark bracket reads as a hole in it.
+    cube(marble, side * 5.255, 2.83, zs, 0.15, 0.13, 0.15); // stepped foot — the console's scroll
+    cube(marble, side * 5.26, 3.02, zs, 0.14, 0.30, 0.22);  // body, keyed into the wall
+    cube(marble, side * 5.20, 3.20, zs, 0.26, 0.07, 0.28);  // shelf
+    const bx = side * 5.18, by = 3.21;
+    // Tilt is about z, so it leans in the wall's own plane — toward the
+    // corridor centre on both sides, hence `side *`.
+    Q.setFromEuler(EULER.set(0, 0, side * TORCH_TILT));
+    const M = new THREE.Matrix4().compose(V.set(bx, by, zs), Q, S.set(1, 1, 1));
+    batch.place(torchGeo, gold, M);   // place() clones, so one matrix serves both
+    batch.place(flameGeo, flame, M);
+    // Carry the flame's centre through the same tilt so the halo can never
+    // drift off the fire it belongs to.
+    const h = 0.57;
+    haloAt.push(bx - side * Math.sin(TORCH_TILT) * h, by + Math.cos(TORCH_TILT) * h, zs);
   };
 
   // One Doric column: plinth → torus base → fluted shaft → echinus → abacus.
@@ -1938,15 +2010,7 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
       // outer edge (4.09), so it wedges the arch instead of hanging into it
       put(keyAedGeo, marble, side * 5.06, 3.90, z, 1, -side * Math.PI / 2);
       pedimentSide(side, z, 1.9, 1.05, aedTympanum);
-      // Sconces: a corbel bearing on the wall, an arm, and the globe it
-      // carries. The old bracket floated 1.5cm clear of the wall with the
-      // globe hanging 6cm above it — three unconnected pieces.
-      for (const s2 of [-1, 1]) {
-        const zs = z + s2 * 2.1;
-        cube(marbleDeep, side * 5.24, 3.08, zs, 0.16, 0.26, 0.18); // corbel, keyed into the wall
-        cube(gold, side * 5.17, 3.20, zs, 0.30, 0.05, 0.05);       // arm
-        put(rosBossGeo, flame, side * 5.05, 3.20, zs, 1.7);        // globe at the arm's end
-      }
+      for (const s2 of [-1, 1]) torch(side, z + s2 * 2.1);
       // the mirror itself
       const pane = new THREE.Mesh(paneGeoSmall, mirrorBase.clone());
       pane.position.set(side * (WALL_X - 0.18), PODIUM_TOP, z);
@@ -2029,8 +2093,23 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
       cube(marble, 0, CEIL_Y - 0.11, z, CEIL_HALF * 2, 0.15, 0.16);
   }
 
+  // The torches' halo. Every flame in the hall is ONE Points object — sixteen
+  // billboards in a single draw call — rather than sixteen Sprites, which
+  // cannot batch and would each cost their own. It reuses the soft radial
+  // texture the beyond's sun halo already builds, additively blended and tinted
+  // lilac: this is the light spilling off the fire, and the flame mesh alone
+  // stops at its own silhouette.
+  const haloMat = new THREE.PointsMaterial({
+    map: makeGlowTexture(THREE), color: 0xb8a4ff, size: 0.46,
+    transparent: true, opacity: 0.42, depthWrite: false,
+    blending: THREE.AdditiveBlending, sizeAttenuation: true,
+  });
+  const haloGeo = new THREE.BufferGeometry();
+  haloGeo.setAttribute("position", new THREE.Float32BufferAttribute(haloAt, 3));
+  corridor.add(new THREE.Points(haloGeo, haloMat));
+
   batch.commit();
-  return { panes, endPane, nicheKeys, nicheZs };
+  return { panes, endPane, nicheKeys, nicheZs, flame, haloMat };
 
   // ---- local builders (they share the batcher, materials and datums) ----
 
@@ -2462,6 +2541,65 @@ function makeDrapeGeo(THREE) {
     pos.setY(i, ny);
   }
   geo.computeVertexNormals();
+  return geo;
+}
+
+// ---------- the divine torch ----------
+// A turned bronze torch for the wall consoles: a pointed finial, an astragal
+// bead, a slender shaft, and a flared calyx to hold the fire. One lathe, so
+// the whole thing is a single instanced geometry.
+//
+// The profile turns back on itself at the rim (out to 0.086, then in and down
+// to the axis) — that is what hollows the cup, so the flame stands IN a brazier
+// rather than balancing on a disc. Local y runs 0 at the finial's point to
+// 0.518 at the rim; the cup floor is at 0.442.
+//
+// Proportion is the whole job here. The first cut flared to 0.118 over a 0.022
+// shaft — a five-to-one bowl on a stem, which renders as a wine glass, and at a
+// distance as a lampshade. A torch is a shaft that happens to end in a cup: the
+// shaft is thick enough to grip, the cup barely wider than the fire it holds.
+function makeTorchGeo(THREE) {
+  const pts = [
+    [0.000, 0.000], [0.030, 0.030], [0.038, 0.058], [0.024, 0.086], // finial
+    [0.034, 0.104], [0.026, 0.130],                                 // astragal bead
+    [0.030, 0.300], [0.034, 0.340],                                 // shaft
+    [0.046, 0.368], [0.038, 0.388],                                 // collar
+    [0.052, 0.410], [0.072, 0.450],                                 // cup springs
+    [0.084, 0.500], [0.086, 0.518],                                 // rim
+    [0.072, 0.512], [0.056, 0.470], [0.000, 0.442],                 // and back down inside
+  ].map(([x, y]) => new THREE.Vector2(x, y));
+  // 42°: the beads and the collar keep their arrises, the swellings between
+  // them go smooth. A lathe smooths everything by default, which turns
+  // fine turned mouldings into soft wax at this scale.
+  return crease(new THREE.LatheGeometry(pts, 24), 0.73);
+}
+
+// The flame: an idealised teardrop, not a simulation. Rotationally symmetric
+// on purpose — this hall's whole argument is the ideal form of a thing, and a
+// perfect flame is a leaf of light, not a noise field. Pre-translated to stand
+// in the calyx so it shares the torch's transform exactly and can never drift
+// out of the cup.
+//
+// Left smooth (no crease): an arris on a flame reads as a facet, and a facet
+// reads as polygons.
+function makeFlameGeo(THREE) {
+  // Widest at 0.057, inside the cup's 0.086 rim, so the fire rises OUT of the
+  // brazier instead of sitting on top of it like a lid.
+  //
+  // The curve is the whole thing. Eight points ran almost straight from the
+  // shoulder to the tip, and a straight taper is a CONE — it rendered as a
+  // party hat. A flame is convex where it swells off the fuel and then concave
+  // for the long draw to the tip, so the extra points all go into that draw.
+  // Fatter and shorter than the first pass, which was 2.9 tall for every 1
+  // wide — at that ratio it is a spike whatever the curve does. A flame at rest
+  // is nearer 1.7:1.
+  const pts = [
+    [0.000, 0.000], [0.038, 0.016], [0.062, 0.042], [0.073, 0.072],
+    [0.075, 0.100], [0.069, 0.132], [0.057, 0.166], [0.042, 0.200],
+    [0.027, 0.230], [0.013, 0.255], [0.000, 0.275],
+  ].map(([x, y]) => new THREE.Vector2(x, y));
+  const geo = new THREE.LatheGeometry(pts, 20);
+  geo.translate(0, 0.43, 0); // seated on the cup floor
   return geo;
 }
 
