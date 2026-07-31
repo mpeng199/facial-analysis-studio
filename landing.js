@@ -6,11 +6,14 @@
 // panels, and native scroll drives the camera down the hall.
 //
 // The hall is a Greek temple interior — one connected classical order, not
-// floating props. It is dressed in a small stone library (see buildHall):
-// warm statuary white for the order, cool pearl ashlar walls, greyed recessed
-// fields, and honey travertine base courses, with a per-block quarry tint from
-// the batcher. Cerulean paint bands the columns and fills the frieze; navy
-// drapery hangs in the bays. Shared datum lines tie every element together:
+// floating props. It is dressed in a small stone library (see buildHall): one
+// pale violet-white quarry cut five ways — statuary white for the order,
+// lilac-pearl ashlar walls, violet-greyed recessed fields, pale limestone base
+// courses — separated by VALUE, not temperature, with a per-block quarry tint
+// from the batcher. Iris limewash bands the columns and fills the frieze; the
+// gilt is desaturated to silver-gilt; violet drapery hangs in the bays. The
+// whole palette answers the site's own --pearl / --iris.
+// Shared datum lines tie every element together:
 //   y 0     floor          y 1.10       podium top (columns + mirror bays stand on it)
 //   y 4.90  column capitals = architrave bottom; entablature runs y 4.90–6.24
 //   y 6.24+ balustraded attic; pediments crown the transverse arches.
@@ -24,7 +27,7 @@
 // reflection." + Begin analysis) exists as real 3D objects, not a DOM overlay.
 // Scrolling back up crosses you back into the pearl hall.
 //
-// Sections: boot guard · scene · environment · hall · void · rig · loop.
+// Sections: boot guard · scene · environment · hall · void · rig · post · loop.
 
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const FORCE_STATIC = new URLSearchParams(location.search).has("no3d");
@@ -61,27 +64,53 @@ async function init(THREE) {
   if (!renderer.getContext()) throw new Error("no WebGL context");
   renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
   renderer.setSize(innerWidth, innerHeight);
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.06; // brighter, cleaner daylight than the old sunset
+  // Khronos PBR Neutral, NOT ACES. ACES is a film-stock emulation: it rolls
+  // bright values toward its own warm shoulder, so a white marble hall lit to
+  // near-clipping comes out cream whatever colour you paint the stone — it was
+  // a real part of the yellow cast, not just the palette. Neutral holds hue all
+  // the way up and only desaturates in the last stop, which is exactly the
+  // "idealised, pristine" white the reference has.
+  renderer.toneMapping = THREE.NeutralToneMapping;
+  // 1.34, not the old 1.06. Measured off the frame: at 1.16 the brightest
+  // pixel in the hall was 236/255 and under 7% of the image sat above 220 —
+  // a picture with no white in it, which is why the marble read as grey stone
+  // rather than as polished white. "Pristine and idealised" is a HIGH-KEY
+  // image: the lit faces have to reach the top of the range and let the
+  // lavender live in the shadows, not smear across the whole scale.
+  // The beyond gets its own stop. Crossing the mirror already swaps the key
+  // light, the sky and the fog; exposure belongs in that same list, because the
+  // beyond is a white cast in front of an open sky with no architecture to
+  // absorb the light, and the hall's exposure bleaches it flat (measured: mean
+  // 223/255, the Discobolus ghosting into its own background). Real scenes get
+  // metered individually; this one is metered twice. The change lands inside
+  // the veil flash, so it is never seen happening.
+  const EXP_HALL = 1.34, EXP_BEYOND = 1.02;
+  renderer.toneMappingExposure = EXP_HALL;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-  // Bright classical daylight: a clean marble hall, warm sun raking in over
-  // cool blue accents — not the old sunset haze. The far background is a
-  // luminous blue-white the corridor opens onto; the sky is a painted dome
-  // inside the corridor group.
-  const DAWN = new THREE.Color("#e2eaf1");
+  // Bright classical daylight in the site's own pearl: a lavender-white hall,
+  // a neutral sun, and cool violet in every shadow. Nothing in the building is
+  // allowed a warm hue any more except the sconce flames — warm/cool contrast
+  // now runs white against lavender rather than gold against blue.
+  const DAWN = new THREE.Color("#eceaf6"); // --pearl, straight off the stylesheet
   const scene = new THREE.Scene();
   scene.background = DAWN;
   // The corridor is 63 units end to end, so fog starting at 16 and saturating
   // at 72 erased everything past the third arch into flat white — no aerial
   // perspective, just a whiteout. Interiors this size barely haze at all;
   // enough to separate the far bays and float the portico, no more.
-  const pearlFog = new THREE.Fog(new THREE.Color("#dfe8f0"), 34, 126);
-  const beyondFog = new THREE.Fog(0xe4cbd6, 24, 96); // far-shore haze beyond the mirror
+  // near pushed 34 → 42: at the higher exposure the haze was starting inside
+  // the second bay and turning the whole far half of the colonnade to milk.
+  // Aerial perspective should separate the far bays, not erase them.
+  const pearlFog = new THREE.Fog(new THREE.Color("#e9e7f4"), 42, 150);
+  const beyondFog = new THREE.Fog(0xdcd6ee, 30, 96); // far-shore haze beyond the mirror
   scene.fog = pearlFog;
 
-  const camera = new THREE.PerspectiveCamera(innerWidth < 720 ? 66 : 54, innerWidth / innerHeight, 0.1, 160);
+  // near 0.3, not 0.1: the depth buffer's precision is spent almost entirely in
+  // the first stop of the range, and both the shadow map and the AO pass read
+  // that buffer. Nothing in the hall ever comes within 30cm of the lens.
+  const camera = new THREE.PerspectiveCamera(innerWidth < 720 ? 66 : 54, innerWidth / innerHeight, 0.3, 160);
   camera.position.set(0, 1.7, 6);
 
   // ---------- environment: pastel "aurora studio" for iridescent reflections ----------
@@ -102,17 +131,27 @@ async function init(THREE) {
   // palette, is why the casts read as paper cut-outs.
   // Now: one dominant directional key, and fill only where a real hall would
   // get it — sky down the open clerestory, warm bounce back up off the floor.
-  scene.add(new THREE.AmbientLight(0xe6ebf4, 0.15)); // floor of the value range, nothing more
-  // sky-above / warm-floor-bounce fill — roof-independent, so the coffered
-  // ceiling can enclose the nave without the interior going flat. Unlike
-  // ambient this at least varies with the surface normal, so it MODELS.
-  scene.add(new THREE.HemisphereLight(0xdfeaf6, 0xd8c8ac, 0.42));
+  scene.add(new THREE.AmbientLight(0xe8e6f4, 0.15)); // floor of the value range, nothing more
+  // sky-above / floor-bounce fill — roof-independent, so the coffered ceiling
+  // can enclose the nave without the interior going flat. Unlike ambient this
+  // at least varies with the surface normal, so it MODELS.
+  // The ground half was 0xd8c8ac — a tan. It is the term that lights every
+  // upward-facing surface in the hall from below, so a tan there put a warm
+  // wash on every soffit, undercut and jaw in the building at once. Now the
+  // bounce carries the floor's own lilac up instead.
+  scene.add(new THREE.HemisphereLight(0xeef0fb, 0xdcd6ea, 0.50));
   // The hall is a big daylit interior and wants a dominant key. The beyond is a
   // separate rig — one raking museum spot on the cast plus a cool rim, tuned
   // against the old 1.95 — so the same sun there just blows the marble out.
   // Crossing the mirror swaps the key along with the sky and the fog.
-  const SUN_HALL = 3.05, SUN_BEYOND = 1.9;
-  const sun = new THREE.DirectionalLight(0xfff2e0, SUN_HALL);
+  // SUN_BEYOND was 1.9, tuned against the old ACES curve at exposure 1.06. The
+  // hall gained a third of a stop and a flatter tone curve; the beyond has far
+  // less geometry to absorb it, so the same rig there just bleached the cast.
+  const SUN_HALL = 3.05, SUN_BEYOND = 1.55;
+  // Near-white daylight (was 0xfff2e0, a 5500K-ish golden hour). This is the
+  // dominant term in the hall — 3.05 against a 0.15 ambient — so its hue IS the
+  // hall's hue, and no amount of repainting the stone survives a gold key.
+  const sun = new THREE.DirectionalLight(0xfff8f4, SUN_HALL);
   // steep sun so direct light pours into the open-roofed corridor (a low sun
   // leaves the whole interior in the side wall's shadow); one static shadow
   // camera covers the whole (static) hall
@@ -136,21 +175,25 @@ async function init(THREE) {
   sun.shadow.camera.updateProjectionMatrix();
   scene.add(sun);
   scene.add(sun.target);
-  // low warm fill from the far end — sunset bounce, so transverse faces
-  // facing the camera catch the glow the visible sun implies
-  const fill = new THREE.DirectionalLight(0xffd6ba, 0.3);
+  // Cool fill down the corridor axis — skylight spilling back off the far
+  // portico, so transverse faces turned toward the camera are lit by the SKY
+  // rather than by a second sun. It was 0xffd6ba, a hard orange: an amber fill
+  // aimed at every camera-facing surface is a warm cast applied to precisely
+  // the faces the visitor spends the whole scroll looking at.
+  const fill = new THREE.DirectionalLight(0xd6d4f0, 0.3);
   fill.position.set(-3, 4, -9);
   scene.add(fill);
   // Floor bounce. A white marble floor under a 3.0 sun throws a lot of light
   // back up; without it every soffit, cornice undercut and jaw goes to the
   // ambient floor value and the modelling dies from below. Cheap and it is the
-  // one direction the hemisphere's ground colour cannot aim.
-  const bounce = new THREE.DirectionalLight(0xffe9d2, 0.4);
+  // one direction the hemisphere's ground colour cannot aim. Bounced light
+  // takes the colour of what it bounced off, and that floor is now lilac.
+  const bounce = new THREE.DirectionalLight(0xeeebfa, 0.5);
   bounce.position.set(-6, -8, 10);
   scene.add(bounce);
   // travelling lantern: was 26, which blew out every surface within a few
   // metres of the camera all by itself
-  const lantern = new THREE.PointLight(0xfff2e2, 11, 18, 2);
+  const lantern = new THREE.PointLight(0xf7f5ff, 11, 18, 2);
   scene.add(lantern);
 
   // ---------- shared materials ----------
@@ -161,7 +204,7 @@ async function init(THREE) {
     envMap: envTex, envMapIntensity: 1.6,
   });
   const mirrorBase = new THREE.MeshPhysicalMaterial({
-    color: 0xdfe6ff, metalness: 1, roughness: 0.055,
+    color: 0xe4e0ff, metalness: 1, roughness: 0.055,
     envMap: envTex, envMapIntensity: 1.7,
     side: THREE.DoubleSide, // panes face inward from both walls
   });
@@ -177,6 +220,11 @@ async function init(THREE) {
 
   const corridor = new THREE.Group();
   scene.add(corridor);
+
+  // Resolve the auto-smooth helper BEFORE any geometry is built — see `crease`.
+  await import("three/addons/utils/BufferGeometryUtils.js")
+    .then(({ toCreasedNormals }) => { crease = toCreasedNormals; })
+    .catch(() => {}); // identity stands in; shading is flatter, nothing breaks
 
   const archGeo = makeArchGeometry(THREE); // fallback centrepiece for the beyond
   const paneGeo = makePaneGeometry(THREE);
@@ -243,11 +291,15 @@ async function init(THREE) {
     if (gaugeDot) gaugeDot.style.top = `${progress * 100}%`;
   };
 
+  // declared before the resize listener that closes over it: a resize can fire
+  // while the post stack is still being awaited
+  let post = null;
   addEventListener("resize", () => {
     camera.aspect = innerWidth / innerHeight;
     camera.fov = innerWidth < 720 ? 66 : 54;
     camera.updateProjectionMatrix();
     renderer.setSize(innerWidth, innerHeight);
+    post?.setSize(innerWidth, innerHeight);
   });
 
   // ---------- dimension crossing ----------
@@ -266,6 +318,7 @@ async function init(THREE) {
       scene.background = on ? envTex : DAWN;
       scene.fog = on ? beyondFog : pearlFog;
       sun.intensity = on ? SUN_BEYOND : SUN_HALL;
+      renderer.toneMappingExposure = on ? EXP_BEYOND : EXP_HALL;
       flash?.classList.remove("on");
       if (!on) { hover = false; canvas.style.cursor = ""; }
     }, REDUCED ? 420 : 140);
@@ -309,6 +362,10 @@ async function init(THREE) {
     if (voidOn && e.key === "Enter" && e.target === document.body) location.href = "analyze.html";
   });
 
+  // ---------- post ----------
+  post = await buildPost(THREE, renderer, scene, camera);
+  const draw = post ? post.render : () => renderer.render(scene, camera);
+
   // ---------- loop ----------
   // Shaders compile up-front (void included) so neither world hitches on entry.
   voidWorld.group.visible = true;
@@ -323,6 +380,7 @@ async function init(THREE) {
   // heuristic false-positived on capable machines. `?no3d` is the manual escape.
   const bailToStatic = () => {
     renderer.setAnimationLoop(null);
+    post?.dispose();
     renderer.dispose();
     document.body.classList.remove("cinema", "void");
     scrollTo(0, 0);
@@ -376,8 +434,13 @@ async function init(THREE) {
       const d = Math.max(0, camZ - MIRROR_Z);
       if (d < 9) {
         const k = 1 - d / 9;
-        endPane.material.emissiveIntensity = k * k * 3.4;
-        endPane.material.envMapIntensity = 1.7 + k * 3;
+        // Trimmed from 3.4/×3: the flare was set against the old exposure with
+        // nothing downstream of it. It now runs a third of a stop hotter AND
+        // feeds a bloom pass keyed above 1.0, so the last two bays of the
+        // approach were a flat white-out instead of a mirror filling with
+        // light. The veil should brighten to the crossing, not before it.
+        endPane.material.emissiveIntensity = k * k * 2.3;
+        endPane.material.envMapIntensity = 1.7 + k * 2.2;
       }
       dust.update(t);
       if (!REDUCED) sky.update(t);
@@ -385,7 +448,7 @@ async function init(THREE) {
     if (voidWorld.group.visible) voidWorld.update(t, hover);
 
     syncDOM();
-    renderer.render(scene, camera);
+    draw(t);
   };
   renderer.setAnimationLoop(tick);
 
@@ -400,10 +463,240 @@ async function init(THREE) {
     tick, snap: () => { camZ = zAt(progress); },
     go: (p) => { progress = p; camZ = zAt(p); },
     addRipple: (x, z) => voidWorld.addRipple(x, z),
-    scene, camera, renderer, voidGroup: voidWorld.group,
+    scene, camera, renderer, post, voidGroup: voidWorld.group,
   };
   console.info("3D corridor active.");
 }
+
+// =========================================================================
+// The cinematic pass.
+//
+// Everything above renders a scene; this is what turns it into a picture, and
+// it is the step the hall never had. The order below is the standard
+// render → comp order, and each stage has to sit where it sits:
+//
+//   RenderPass   linear HDR beauty at 4× MSAA. MSAA and not a post-AA filter
+//                (SMAA/FXAA): this hall is built out of subpixel members —
+//                dentils, flutes, several hundred balusters — and no filter
+//                can recover an edge the rasteriser never sampled.
+//   GTAOPass     ground-truth ambient occlusion. The hall had NO occlusion
+//                term at all, which the lighting comments already named as
+//                the reason "the casts read as paper cut-outs": skylight and
+//                bounce landed identically on a capital's top face, its
+//                undercut and the floor beneath it. AO is the only term that
+//                separates them, and it is what makes a coffer look sunk, a
+//                niche look deep and a column look like it is standing ON
+//                the floor rather than intersecting it.
+//   Bloom        highlight spill, on the HDR buffer BEFORE the tone curve, so
+//                it keys off real over-1.0 radiance (sun disc, sconces, the
+//                end mirror's flare) instead of off whatever survived the
+//                curve. Post-curve bloom is the classic mistake that smears
+//                every mid-grey highlight.
+//   OutputPass   tone curve (PBR Neutral) + sRGB, once, for the whole frame —
+//                sky, stone and text finally share one response.
+//   grade        the colourist's pass, in display space where grading is
+//                actually defined: white balance, lavender lift, contrast,
+//                saturation, lens aberration, vignette, grain.
+//
+// Returns null if any of it fails to load — the hall then renders exactly as
+// it did before, which is a worse picture and a working one.
+// =========================================================================
+async function buildPost(THREE, renderer, scene, camera) {
+  let mod;
+  try {
+    mod = await Promise.all([
+      import("three/addons/postprocessing/EffectComposer.js"),
+      import("three/addons/postprocessing/RenderPass.js"),
+      import("three/addons/postprocessing/ShaderPass.js"),
+      import("three/addons/postprocessing/OutputPass.js"),
+      import("three/addons/postprocessing/UnrealBloomPass.js"),
+      import("three/addons/postprocessing/GTAOPass.js"),
+    ]);
+  } catch { return null; }
+  const [{ EffectComposer }, { RenderPass }, { ShaderPass }, { OutputPass }, { UnrealBloomPass }, { GTAOPass }] = mod;
+
+  const dpr = renderer.getPixelRatio();
+  const W = Math.round(innerWidth * dpr), H = Math.round(innerHeight * dpr);
+  // AO doubles the geometry cost of a frame (it needs its own depth+normal
+  // pass over 1.6M triangles of statuary), so phones never even allocate its
+  // buffers. They still get the MSAA, the grade, the bloom and the tone curve —
+  // the colour is the point, the occlusion is the luxury. On everything else
+  // the width test only decides whether to TRY; see the frame-budget check on
+  // render() below for the decision that actually matters.
+  const heavy = innerWidth >= 900 && !REDUCED;
+
+  // MSAA is NOT optional and is not tied to `heavy`: the moment a composer is
+  // in play, `antialias: true` on the canvas stops doing anything (the scene is
+  // rasterised into an offscreen target, not the default framebuffer), so
+  // without samples here every screen loses antialiasing outright. A hall built
+  // out of subpixel members crawls badly without it, and post-AA filters
+  // (SMAA/FXAA) cannot reconstruct an edge that was never sampled.
+  // Sample count scales with the backing store instead: 4× is cheap at laptop
+  // resolutions, but on a 4K/retina buffer two 4×-multisampled HalfFloat
+  // targets are half a gigabyte, so those step down to 2×.
+  const target = new THREE.WebGLRenderTarget(W, H, {
+    type: THREE.HalfFloatType,        // bloom needs headroom above 1.0
+    samples: W * H > 4.2e6 ? 2 : 4,
+  });
+  const composer = new EffectComposer(renderer, target);
+  composer.setSize(innerWidth, innerHeight);
+
+  composer.addPass(new RenderPass(scene, camera));
+
+  // AO is a LOW-FREQUENCY term — it is the slow darkening in a corner, and it
+  // gets a poisson denoise blur of its own before it is blended — so resolving
+  // it per-pixel is work you cannot see. Measured on this scene: full-res/16
+  // samples cost 9.0ms a frame, half-res/8 costs 3.8ms for an image I could
+  // not tell apart. The AO buffers are linearly filtered, so the upsample is
+  // free and smooth. (Only the pass's normal buffer is nearest-filtered, and
+  // that one is read at its own resolution.)
+  const AO_SCALE = 0.5;
+  let gtao = null;
+  if (heavy) {
+    gtao = new GTAOPass(scene, camera, W * AO_SCALE, H * AO_SCALE);
+    // radius in WORLD units, and this scene is metric: 0.55m is about the
+    // depth of the deepest recess in the hall (a niche is 0.34, a coffer
+    // field 0.10), so mouldings darken in their corners without the whole
+    // colonnade smearing into a grey haze.
+    gtao.updateGtaoMaterial({ radius: 0.55, distanceExponent: 1, thickness: 1, scale: 1, samples: 8, screenSpaceRadius: false });
+    gtao.blendIntensity = 0.85; // present, not a charcoal drawing
+    composer.addPass(gtao);
+  }
+
+  // threshold 1.15: in a linear buffer, sunlit white marble already sits near
+  // 1.0, so a lower threshold blooms the entire building and the hall goes
+  // milky. Only what is genuinely emitting spills.
+  const bloom = new UnrealBloomPass(new THREE.Vector2(W, H), 0.26, 0.7, 1.15);
+  composer.addPass(bloom);
+
+  composer.addPass(new OutputPass());
+
+  const grade = new ShaderPass({
+    uniforms: {
+      tDiffuse: { value: null },
+      uTime: { value: 0 },
+      uAberr: { value: 0.0022 },
+      uVignette: { value: 0.26 },
+      uGrain: { value: REDUCED ? 0 : 0.016 },
+      uLift: { value: new THREE.Vector3(0.010, 0.008, 0.020) },
+      uGain: { value: new THREE.Vector3(0.986, 0.992, 1.008) },
+      uContrast: { value: 1.10 },
+      uSat: { value: 0.93 },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+      }`,
+    fragmentShader: `
+      uniform sampler2D tDiffuse;
+      uniform float uTime, uAberr, uVignette, uGrain, uContrast, uSat;
+      uniform vec3 uLift, uGain;
+      varying vec2 vUv;
+
+      void main() {
+        vec2 c = vUv - 0.5;
+        float r2 = dot( c, c );
+
+        // Transverse chromatic aberration. A real lens focuses red and blue at
+        // slightly different image heights, so the split grows with the SQUARE
+        // of the distance off-axis and is exactly zero at the centre — a
+        // uniform rgb offset is the giveaway of a fake one. Sub-pixel at the
+        // frame edge; you read it as glass, not as an effect.
+        vec2 off = c * r2 * uAberr;
+        vec3 col = vec3(
+          texture2D( tDiffuse, vUv + off ).r,
+          texture2D( tDiffuse, vUv ).g,
+          texture2D( tDiffuse, vUv - off ).b
+        );
+
+        // Lift/gain white balance. Gain pulls the highlights off yellow (less
+        // red, a touch more blue); lift floats the shadows toward lavender so
+        // the darks are violet rather than neutral grey — warm light against
+        // cool shadow, the trick of every classical daylight painting, done in
+        // the site's own hues instead of gold-against-blue.
+        col = col * uGain + uLift * ( 1.0 - col );
+
+        col = ( col - 0.5 ) * uContrast + 0.5;
+
+        // Desaturate slightly: "pristine and idealised, not realistic" is a
+        // low-chroma, high-value picture. Rec.709 luma so the pull is
+        // perceptual and whites do not drift.
+        float l = dot( col, vec3( 0.2126, 0.7152, 0.0722 ) );
+        col = mix( vec3( l ), col, uSat );
+
+        // Vignette on the fourth power of radius: flat across the middle
+        // third, falling off only in the corners, the way a fast lens does.
+        col *= 1.0 - uVignette * r2 * r2 * 4.0;
+
+        // Grain last, in display space, so its amplitude is constant instead
+        // of exploding in the highlights. This is what stops a flat expanse of
+        // white marble banding into visible steps on an 8-bit display.
+        float n = fract( sin( dot( gl_FragCoord.xy + uTime, vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
+        col += ( n - 0.5 ) * uGrain;
+
+        gl_FragColor = vec4( clamp( col, 0.0, 1.0 ), 1.0 );
+      }`,
+  });
+  composer.addPass(grade);
+
+  // Adaptive AO. Viewport width is a poor proxy for a GPU — a 4K laptop on
+  // integrated graphics counts as "desktop", a fast machine in a split pane
+  // does not — so the width test above only decides whether to ALLOCATE the AO
+  // buffers, and the real decision is made by measuring. Measured here, the
+  // pass costs a whole extra depth+normal render of 1.6M triangles of
+  // statuary; on a page whose entire product is a smooth scroll, a dropped
+  // frame is worse than a missing shadow. So if real frames come in over
+  // budget, the luxury pass is what goes — never the corridor. (That is the
+  // same policy as the WebGL fallback above, one level down: degrade the
+  // picture, don't hide it.)
+  let frame = 0, prev = 0, missed = 0;
+  const WARMUP = 60, WINDOW = 90; // skip boot + the six async statue loads
+  return {
+    render(t) {
+      grade.uniforms.uTime.value = t % 100;
+      composer.render();
+      if (!gtao || !gtao.enabled || frame > WARMUP + WINDOW) return;
+      const now = performance.now();
+      // >24ms means the frame missed a vsync outright (60Hz lands at 16.7)
+      if (frame > WARMUP && prev && now - prev > 24) missed++;
+      prev = now;
+      if (++frame === WARMUP + WINDOW && missed > WINDOW * 0.35) {
+        gtao.enabled = false;
+        console.info("3D corridor: ambient-occlusion pass disabled to hold the frame rate.");
+      }
+    },
+    setSize(w, h) {
+      composer.setSize(w, h);
+      const p = renderer.getPixelRatio();
+      bloom.setSize(w * p, h * p);
+      gtao?.setSize(w * p * AO_SCALE, h * p * AO_SCALE);
+    },
+    dispose() { composer.dispose(); },
+    composer, gtao, bloom, grade,
+  };
+}
+
+// ---------- shade auto smooth ----------
+// Blender's single most-repeated modelling note — "your shading is wrong
+// because your normals are wrong" — and its fix, Shade Auto Smooth: average a
+// vertex's normals across the faces that meet gently, and leave the ones that
+// meet sharply alone. three's equivalent is toCreasedNormals.
+//
+// It matters here because ExtrudeGeometry finishes with computeVertexNormals()
+// on NON-INDEXED geometry, which is flat shading: every triangle gets its own
+// normal and nothing is ever averaged. So every round-arched opening in this
+// hall — the transverse arches you walk under, the mirror aediculae, the grand
+// portico — was a 36-sided polygon wearing 36 separate flat facets, each one
+// catching the sun at its own angle. That faceted arc, banding round the
+// intrados of every arch, is the clearest "this is a game asset" tell in the
+// building. Creasing at 32° averages along the curve and keeps every
+// structural arris — face to bevel, bevel to reveal — dead sharp.
+//
+// Assigned from init once the addon resolves; identity until then, so a failed
+// CDN fetch costs shading quality and nothing else.
+let crease = (geo) => geo;
 
 // Arch frame: rectangle with a round-arched opening, extruded. Base sits at y=0.
 function makeArchGeometry(THREE) {
@@ -415,9 +708,9 @@ function makeArchGeometry(THREE) {
   hole.absarc(0, 3.4, 1.3, Math.PI, 0, true);
   hole.lineTo(1.3, 0); hole.closePath();
   outer.holes.push(hole);
-  const geo = new THREE.ExtrudeGeometry(outer, { depth: 0.28, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.04, curveSegments: 28 });
+  const geo = new THREE.ExtrudeGeometry(outer, { depth: 0.28, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.04, curveSegments: 40 });
   geo.translate(0, 0, -0.14);
-  return geo;
+  return crease(geo, 0.56); // ≈32°
 }
 
 // Mirror pane: the arch opening itself, slightly inset.
@@ -426,7 +719,7 @@ function makePaneGeometry(THREE) {
   s.moveTo(-1.26, 0.02); s.lineTo(-1.26, 3.4);
   s.absarc(0, 3.4, 1.26, Math.PI, 0, true);
   s.lineTo(1.26, 0.02); s.closePath();
-  return new THREE.ShapeGeometry(s, 28);
+  return new THREE.ShapeGeometry(s, 40);
 }
 
 // ---------- the world beyond the mirror ----------
@@ -446,16 +739,20 @@ function buildVoid(THREE, renderer, { archGeo, paneGeo, crystal, mirrorBase, VOI
   const centrepiece = new THREE.Group();
   centrepiece.position.set(0, 0, VOID_Z + 1); // close enough to command the frame
   group.add(centrepiece);
+  // Repainted with the hall: crossing the mirror must not cross a white
+  // balance. The beyond IS the image the panes were reflecting, so a cream
+  // centrepiece behind a lavender-white hall breaks the one illusion the whole
+  // scroll is built on.
   const statueMarble = new THREE.MeshPhysicalMaterial({
-    color: 0xf2efe6, metalness: 0.03, roughness: 0.4,
+    color: 0xf4f2fa, metalness: 0.03, roughness: 0.4,
     clearcoat: 0.3, clearcoatRoughness: 0.5,
-    sheen: 0.4, sheenRoughness: 0.55, sheenColor: new THREE.Color(0xfff6e8),
+    sheen: 0.4, sheenRoughness: 0.55, sheenColor: new THREE.Color(0xf4f0ff),
     iridescence: 0.15, iridescenceIOR: 1.3, iridescenceThicknessRange: [120, 360],
     envMap: envTex, envMapIntensity: 0.55,
   });
   // museum lighting: a raking key with its own tight shadow map — this is
   // what carves the musculature — and a cool rim to lift the silhouette
-  const key = new THREE.SpotLight(0xfff1e0, 90, 34, 0.44, 0.6, 2);
+  const key = new THREE.SpotLight(0xfffaf6, 90, 34, 0.44, 0.6, 2);
   key.position.set(-7, 9.5, VOID_Z + 8);
   key.target.position.set(0, 2.6, VOID_Z + 1);
   key.castShadow = true;
@@ -465,7 +762,7 @@ function buildVoid(THREE, renderer, { archGeo, paneGeo, crystal, mirrorBase, VOI
   key.shadow.bias = -0.0003;
   key.shadow.normalBias = 0.03;
   group.add(key, key.target);
-  const rim = new THREE.SpotLight(0xbfd0ff, 50, 34, 0.5, 0.7, 2);
+  const rim = new THREE.SpotLight(0xc6bfff, 50, 34, 0.5, 0.7, 2);
   rim.position.set(6.5, 6, VOID_Z - 8);
   rim.target.position.set(0, 3, VOID_Z + 1);
   group.add(rim, rim.target);
@@ -482,7 +779,7 @@ function buildVoid(THREE, renderer, { archGeo, paneGeo, crystal, mirrorBase, VOI
   // thin gilt band around the drum
   const band = new THREE.Mesh(
     new THREE.TorusGeometry(1.36, 0.016, 8, 72),
-    new THREE.MeshPhysicalMaterial({ color: 0xc9a54f, metalness: 1, roughness: 0.32, envMap: envTex, envMapIntensity: 1.1 })
+    new THREE.MeshPhysicalMaterial({ color: 0xded3bd, metalness: 1, roughness: 0.30, envMap: envTex, envMapIntensity: 1.0 })
   );
   band.rotation.x = Math.PI / 2;
   band.position.y = 0.42;
@@ -826,8 +1123,18 @@ function makeGlowTexture(THREE) {
 // Pastel environment scene → PMREM texture for reflections/iridescence.
 function buildEnvironment(THREE, renderer) {
   const env = new THREE.Scene();
+  // This IBL is what every polished surface in the building reflects — the
+  // floor sheen, the mirror panes, the gilt, the clearcoat on the casts. It was
+  // a sunset studio (coral, rose, gold), so even after the stone and the lights
+  // were repainted, every specular highlight in the hall would still have
+  // arrived pre-tinted amber. Repainted to a lavender daylight studio.
+  // NOT pure white at the zenith. This texture is also the Void's literal
+  // background (scene.background = envTex once you cross the mirror), and a
+  // white sky behind a white marble Discobolus is a white-out — measured at a
+  // mean of 223/255 with the figure ghosting into it. It has to stay pale and
+  // luminous while still leaving the cast somewhere to stand.
   const sky = new THREE.Mesh(
-    gradientSphere(THREE, 30, "#fff8ec", "#f6ddc6", "#c0d2ee"),
+    gradientSphere(THREE, 30, "#f6f4fc", "#e6e1f4", "#c2c7e4"),
     new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })
   );
   env.add(sky);
@@ -837,10 +1144,10 @@ function buildEnvironment(THREE, renderer) {
     m.lookAt(0, 0, 0);
     env.add(m);
   };
-  glow("#e8967a", -16, 6, -4);   // muted coral
-  glow("#e8a8bc", 16, 5, -2);    // dusty rose
-  glow("#f2d3a4", 2, 14, 6);     // soft gold overhead
-  glow("#87a8cc", 0, 4, 18);     // grey aegean behind
+  glow("#c9bfe6", -16, 6, -4);   // pale iris
+  glow("#d8cfe8", 16, 5, -2);    // wisteria
+  glow("#fbfaff", 2, 14, 6);     // clean skylight overhead
+  glow("#9aa6cc", 0, 4, 18);     // cool grey-blue behind
   const pmrem = new THREE.PMREMGenerator(renderer);
   const tex = pmrem.fromScene(env, 0.035).texture;
   pmrem.dispose();
@@ -879,7 +1186,7 @@ function makeDust(THREE) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(base.slice(), 3));
   const mat = new THREE.PointsMaterial({
-    color: 0xfff3df, size: 0.055, transparent: true, opacity: 0.55,
+    color: 0xf6f4ff, size: 0.055, transparent: true, opacity: 0.55,
     depthWrite: false, sizeAttenuation: true,
   });
   const points = new THREE.Points(geo, mat);
@@ -916,10 +1223,16 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
   // ---- the stone library ----
   // A real quarry never ships one stone. Five cuts, one family, so elements
   // separate by material instead of silhouette alone:
-  //   marble      warm statuary white — the structural order itself
-  //   marbleVeined cool pearl ashlar — the wall planes the order stands against
-  //   marbleDeep  greyed stone — recessed coffer soffits, keystones
-  //   travertine  honey base courses — podium, steps, pier footings
+  //   marble      pearl statuary white — the structural order itself
+  //   marbleVeined lilac-pearl ashlar — the wall planes the order stands against
+  //   marbleDeep  violet-greyed stone — recessed coffer soffits, keystones
+  //   travertine  pale lilac limestone — podium, steps, pier footings
+  // The family used to run cream → honey → tan. Five warm stones is five warm
+  // stones however the lights are balanced, and the base courses (podium,
+  // crepidoma, every pier footing — the whole bottom third of the frame) were
+  // the most saturated of them. One pale violet-white quarry now, separated by
+  // VALUE rather than by temperature, which is what a real quarry gives you and
+  // what keeps the hall reading as one building.
   // DoubleSide because the floor-reflection twins are mirrored (y-flipped).
   // envMapIntensity stays low: the pastel IBL would otherwise flood the sun's
   // direct term and completely wash out the cast shadows.
@@ -928,17 +1241,24 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
   // iridescence 0.4 + clearcoat 0.5 was reading as wet plastic, which is what
   // made the whole hall look synthetic however the colours were tuned.
   const marble = new THREE.MeshPhysicalMaterial({
-    color: 0xe9e4d8, metalness: 0, roughness: 0.48,
+    color: 0xf0eff7, metalness: 0, roughness: 0.44,
     clearcoat: 0.16, clearcoatRoughness: 0.6,
     envMap: envTex, envMapIntensity: 0.32, side: THREE.DoubleSide,
   });
   marble.userData.stone = true;
   const marbleVeined = marble.clone();
   marbleVeined.map = makeMarbleTexture(THREE, renderer);
-  marbleVeined.color.set(0xe2dbcb); // whitewash cream, a shade deeper than the order in front of it
+  marbleVeined.color.set(0xe7e4f0); // pearl, a shade deeper than the order in front of it
+  // Pale champagne, not bullion. Gilt runs the length of the hall — the taenia
+  // fillet under every frieze, an annulet on every column, the curtain rods,
+  // every rosette boss — so at 0xc9a54f it was a saturated gold line down both
+  // walls in every frame, and metal takes its whole colour from its albedo.
+  // Desaturated ~75% it still reads as precious metal against white stone
+  // (silver-gilt, the way a real gilded moulding looks in daylight rather than
+  // under a lamp) without laying an amber stripe across the picture.
   const gold = new THREE.MeshPhysicalMaterial({
-    color: 0xc9a54f, metalness: 1, roughness: 0.32,
-    envMap: envTex, envMapIntensity: 1.1,
+    color: 0xded3bd, metalness: 1, roughness: 0.30,
+    envMap: envTex, envMapIntensity: 1.0,
     side: THREE.DoubleSide,
   });
   // polished stone, not chrome: the mirror quality comes from the clearcoat
@@ -958,16 +1278,17 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
   // weathered grey limestone, only the faintest blue cast — a saturated
   // periwinkle here was the single biggest "toy" tell in the frieze and niches
   const marbleDeep = new THREE.MeshPhysicalMaterial({
-    color: 0xb4b8b6, metalness: 0, roughness: 0.56,
+    color: 0xb6b3c6, metalness: 0, roughness: 0.56,
     clearcoat: 0.08, clearcoatRoughness: 0.7,
     envMap: envTex, envMapIntensity: 0.26, side: THREE.DoubleSide,
   });
   marbleDeep.userData.stone = true;
-  // honey travertine grounds the hall: everything load-bearing at floor level
-  // sits on warm banded stone, tying into the gold annulets and amber veins
+  // Pale lilac limestone grounds the hall: everything load-bearing at floor
+  // level sits on the same cool banded stone, one value below the order it
+  // carries, so the building still reads bottom-heavy without going warm.
   const travertine = new THREE.MeshPhysicalMaterial({
     map: makeTravertineTexture(THREE),
-    color: 0xdfd7c4, metalness: 0, roughness: 0.72,
+    color: 0xdedaea, metalness: 0, roughness: 0.72,
     clearcoat: 0, envMap: envTex, envMapIntensity: 0.2, side: THREE.DoubleSide,
   });
   travertine.userData.stone = true;
@@ -976,35 +1297,45 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
   // the per-block tint carry the variation
   const travPlain = travertine.clone();
   travPlain.map = null;
-  travPlain.color.set(0xd6cdb8);
+  travPlain.color.set(0xd5d1e3);
   // the back of a 34cm-deep recess is in shadow, and a white cast needs a
   // ground to read against: against the pale marbleDeep it used to sit on,
   // the figures had no silhouette at all
   const nicheBack = new THREE.MeshStandardMaterial({
-    color: 0x8d887e, metalness: 0, roughness: 0.88,
+    color: 0x86829a, metalness: 0, roughness: 0.88,
     envMap: envTex, envMapIntensity: 0.16, side: THREE.DoubleSide,
   });
   // niche figures: the six Greek casts. Cloned per figure so each gets its
   // own marble tone (FrontSide: never mirrored).
+  // Sheen is the subsurface bloom just inside a polished marble surface — it is
+  // what stops a cast reading as painted plaster — but its COLOUR is the tint
+  // that lands on every lit curve of every figure. It was 0xfff2e0, so the six
+  // casts, the most looked-at objects in the hall, each wore a warm glaze.
   const figureMarble = new THREE.MeshPhysicalMaterial({
-    color: 0xeee8da, metalness: 0, roughness: 0.5,
+    color: 0xf3f1f9, metalness: 0, roughness: 0.5,
     clearcoat: 0.1, clearcoatRoughness: 0.6,
-    sheen: 0.3, sheenRoughness: 0.65, sheenColor: new THREE.Color(0xfff2e0),
+    sheen: 0.3, sheenRoughness: 0.65, sheenColor: new THREE.Color(0xf2eeff),
     envMap: envTex, envMapIntensity: 0.28, // FrontSide: clones are never mirrored
   });
-  // Cerulean painted trim — the reference's signature blue: the drum bands
-  // that ring each column, the podium stringcourse, the frieze paterae field.
-  // A clean sky-blue pigment, brighter and more saturated than the old
-  // weathered slate, so it reads as painted accent against the white order.
+  // Painted trim, now in the site's own accent rather than the reference's
+  // cerulean: the drum bands ringing each column, the podium stringcourse, the
+  // panel fields. The material is literally named `iris`, and --iris is
+  // #6d5ae6 in the stylesheet — this is the hall finally speaking the page's
+  // palette. Held pale and chalky (a limewash pigment, not a poster colour) so
+  // it stays subordinate to the white order it decorates.
   const iris = new THREE.MeshStandardMaterial({
-    color: 0x5b86c0, metalness: 0, roughness: 0.6,
+    color: 0xb4abdc, metalness: 0, roughness: 0.6,
     envMap: envTex, envMapIntensity: 0.3, side: THREE.DoubleSide,
   });
-  // Deeper cerulean for the continuous frieze band — the blue register the
-  // gold paterae sit in, one value down from the column rings so the band
-  // reads as ground and the rings as ornament.
+  // Deeper iris for the continuous frieze band and the recessed wall panels —
+  // the register the gilt paterae sit in, one value down from the column rings
+  // so the band reads as ground and the rings as ornament. Measured against
+  // the frame at 0x7d72bc: the panel fields are large, they sit right beside
+  // the brightest marble in the picture, and they became the most saturated
+  // thing in every shot — a colour block, not a painted wall. Chalked up two
+  // steps it reads as limewash again and the order stays the subject.
   const friezeBlue = new THREE.MeshStandardMaterial({
-    color: 0x3f68a4, metalness: 0, roughness: 0.62,
+    color: 0x9d96cc, metalness: 0, roughness: 0.62,
     envMap: envTex, envMapIntensity: 0.26, side: THREE.DoubleSide,
   });
   // Navy velvet drapery hung in the bays — the heavy hangings of the
@@ -1016,14 +1347,18 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
   // floor and given a much stronger nap highlight: on velvet the sheen lobe IS
   // the read, and with the deeper folds it now has normals to catch.
   const navy = new THREE.MeshPhysicalMaterial({
-    color: 0x22335e, metalness: 0, roughness: 0.82,
-    sheen: 1, sheenRoughness: 0.42, sheenColor: new THREE.Color(0x8fa6dd),
+    color: 0x322c5c, metalness: 0, roughness: 0.82,
+    sheen: 1, sheenRoughness: 0.42, sheenColor: new THREE.Color(0xb2a4e4),
     clearcoat: 0.08, clearcoatRoughness: 0.7,
     envMap: envTex, envMapIntensity: 0.35, side: THREE.DoubleSide,
   });
-  // sconce lamps: emissive orbs, warm points of life without real light cost
+  // Sconce lamps: emissive orbs, points of life without real light cost. These
+  // are the ONE thing in the hall still allowed to be warm — a flame that
+  // matched the marble would not read as a flame — but they are small, sparse,
+  // and now pulled most of the way to white so they glow rather than gild. With
+  // the bloom pass in front of them they no longer need to be hot to read.
   const flame = new THREE.MeshStandardMaterial({
-    color: 0x201505, emissive: 0xffc678, emissiveIntensity: 1.35, // hot enough to glow, cool enough to stay amber through ACES
+    color: 0x1a1620, emissive: 0xffeedd, emissiveIntensity: 1.5,
     side: THREE.DoubleSide,
   });
 
@@ -1045,21 +1380,29 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
   };
 
   // ---- part geometries ----
+  // Segment counts. Everything here is instanced — ONE copy of each geometry
+  // serves every column, arch and rosette in the hall — so a segment count is
+  // paid once and a facet is paid in every frame. The old numbers were tuned as
+  // if each were a separate mesh: an 8-segment tube on the gilt annulet meant a
+  // 45° facet on the most specular object in the building, and a metal
+  // highlight is exactly where faceting shows first.
   const shaftGeo = makeFlutedShaftGeo(THREE);              // 20-flute Doric shaft
-  const echinusGeo = new THREE.CylinderGeometry(0.35, 0.25, 0.16, 40);
-  const torusBaseGeo = new THREE.TorusGeometry(0.30, 0.055, 10, 40);
+  const echinusGeo = new THREE.CylinderGeometry(0.35, 0.25, 0.16, 56);
+  const torusBaseGeo = new THREE.TorusGeometry(0.30, 0.055, 14, 56);
   const balusterGeo = makeBalusterGeo(THREE);              // unit height, scaled to fit
-  const archivoltGeo = new THREE.TorusGeometry(1, 0.05, 10, 64, Math.PI); // unit half-ring
+  const archivoltGeo = new THREE.TorusGeometry(1, 0.05, 14, 80, Math.PI); // unit half-ring
   const panelGeo = makePanelFrameGeo(THREE);               // wall relief-panel frame
   const blockGeo = makeRusticBlockGeo(THREE);              // drafted-margin masonry block
   const keyAedGeo = makeKeystoneGeo(THREE, 0.10, 0.15, 0.64, 0.34);  // mirror aediculae
   const keyArchGeo = makeKeystoneGeo(THREE, 0.17, 0.25, 0.60, 0.40); // transverse arches
   const keyGrandGeo = makeKeystoneGeo(THREE, 0.18, 0.27, 0.62, 0.40); // end portico
-  const rosPlateGeo = new THREE.CylinderGeometry(0.155, 0.17, 0.05, 24);
-  const rosRingGeo = new THREE.TorusGeometry(0.095, 0.03, 8, 24);
-  const rosBossGeo = new THREE.SphereGeometry(0.045, 12, 10);
-  const annuletGeo = new THREE.TorusGeometry(0.262, 0.018, 8, 32);
-  const bandGeo = new THREE.CylinderGeometry(1, 1, 1, 40); // unit drum, scaled per band
+  const rosPlateGeo = new THREE.CylinderGeometry(0.155, 0.17, 0.05, 32);
+  const rosRingGeo = new THREE.TorusGeometry(0.095, 0.03, 10, 32);
+  // also the sconce globe at 1.7×, and an emissive sphere shows its facets in
+  // the falloff more plainly than a lit one does
+  const rosBossGeo = new THREE.SphereGeometry(0.045, 18, 14);
+  const annuletGeo = new THREE.TorusGeometry(0.262, 0.018, 10, 48);
+  const bandGeo = new THREE.CylinderGeometry(1, 1, 1, 48); // unit drum, scaled per band
   const drapeGeo = makeDrapeGeo(THREE);                    // one navy hanging, baked to bay size
 
   // Carved rosette (plate · ring · gilt boss) — flush relief ornament for the
@@ -1419,12 +1762,12 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
   // its own marble tone — a rank of identically-white casts is the tell
   // that they came out of one file.
   const FIGURES = [
-    { file: "doryphoros",       yaw:  0.14, tone: 0xece7d6 }, // Polykleitos' canon
-    { file: "venus-de-milo",    yaw: -0.14, tone: 0xf1ebdd },
-    { file: "apollo-belvedere", yaw:  0.10, tone: 0xeae5d9 },
-    { file: "kore",             yaw: -0.10, tone: 0xefe6d0 }, // archaic, still faintly warm
-    { file: "discobolus",       yaw:  0.22, tone: 0xe9e4d8 },
-    { file: "zeus-artemision",  yaw: -0.05, tone: 0xe5e2d7 }, // widest span: keep him frontal
+    { file: "doryphoros",       yaw:  0.14, tone: 0xf0eef7 }, // Polykleitos' canon
+    { file: "venus-de-milo",    yaw: -0.14, tone: 0xf5f3fb },
+    { file: "apollo-belvedere", yaw:  0.10, tone: 0xeeecf6 },
+    { file: "kore",             yaw: -0.10, tone: 0xf2eff4 }, // archaic: the one with a hair of warmth left
+    { file: "discobolus",       yaw:  0.22, tone: 0xedecf5 },
+    { file: "zeus-artemision",  yaw: -0.05, tone: 0xe9e8f3 }, // widest span: keep him frontal
   ];
   const box = new THREE.Box3(), size = new THREE.Vector3(), vtx = new THREE.Vector3();
   // A flung-out pose drags its bounding-box centre with it — centring the
@@ -1489,7 +1832,7 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
   // instanced meshes span the whole corridor, so nothing would cull out of a
   // second shadow pass.
   const nicheKeys = [-1, 1].map((side) => {
-    const key = new THREE.SpotLight(0xfff0dd, 30, 9, 0.62, 0.75, 2);
+    const key = new THREE.SpotLight(0xfdfaff, 30, 9, 0.62, 0.75, 2);
     key.target.position.set(side * 4.15, 1.9, 0);
     corridor.add(key, key.target);
     return key;
@@ -1756,7 +2099,12 @@ function makeBatcher(THREE, parent) {
           list.forEach((m, i) => mesh.setMatrixAt(i, m));
           if (mat.userData.stone) {
             for (let i = 0; i < list.length; i += 2) { // reflection twin keeps its block's tint
-              tint.setHSL(rnd() < 0.5 ? 0.09 : 0.6, 0.02 + rnd() * 0.05, 0.945 + rnd() * 0.055);
+              // Quarry jitter. Hue 0.09 is orange: half of every stone surface in
+            // the hall — podium, steps, coffers, the order itself — was being
+            // nudged warm by the batcher, underneath whatever colour the
+            // material asked for. Both hues now sit either side of violet, so
+            // the jitter reads as bed-to-bed variation in ONE pale lilac quarry.
+            tint.setHSL(rnd() < 0.5 ? 0.72 : 0.62, 0.02 + rnd() * 0.05, 0.945 + rnd() * 0.055);
               mesh.setColorAt(i, tint);
               mesh.setColorAt(i + 1, tint);
             }
@@ -1918,8 +2266,16 @@ function makeFlutedShaftGeo(THREE) {
 // Void keeps its own heavens.
 function makeSky(THREE) {
   const group = new THREE.Group();
+  // Periwinkle, not cerulean. The reference's sky is the brightest thing in
+  // frame and sets the whole picture's chroma; dropping its saturation and
+  // rolling it toward the site's violet is most of what makes the hall read as
+  // "lavender and white" rather than "blue and gold".
+  // These are also brighter than they look: with the post stack in place the
+  // sky is tone-mapped along with everything else (the old `toneMapped: false`
+  // only ever applied when drawing straight to the canvas), which is the point
+  // — sky and stone finally sit on one response curve instead of two.
   const dome = new THREE.Mesh(
-    gradientSphere(THREE, 148, "#7ea6d6", "#bcd6ec", "#eef4f8", 96), // blue zenith → pale sky → bright horizon
+    gradientSphere(THREE, 148, "#a3b4e0", "#d6dcf2", "#f8f7fd", 96), // periwinkle zenith → pale sky → bright horizon
     new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false, toneMapped: false })
   );
   dome.position.set(0, 0, -30);
@@ -1932,8 +2288,8 @@ function makeSky(THREE) {
   // the sun is a small disc low ahead — a point of light, NOT a sky-wide
   // wash: oversized glow sprites flatten the whole dome into one yellow slab
   const sun = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: makeGlowTexture(THREE), color: 0xffd3a0, transparent: true,
-    depthWrite: false, fog: false, toneMapped: false, opacity: 0.8,
+    map: makeGlowTexture(THREE), color: 0xfff4ec, transparent: true,
+    depthWrite: false, fog: false, toneMapped: false, opacity: 0.72,
   }));
   sun.position.set(0, 17, -132); // just clears the portico ridge from down the hall
   sun.scale.set(17, 13, 1);
@@ -1944,7 +2300,7 @@ function makeSky(THREE) {
   const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
   for (let i = 0; i < 9; i++) {
     const c = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: cloudTex, color: 0xf3f7fc, transparent: true, depthWrite: false,
+      map: cloudTex, color: 0xfcfbff, transparent: true, depthWrite: false,
       fog: false, toneMapped: false, opacity: 0.3 + rnd() * 0.25,
     }));
     // far and high: a cloud parked 20 units from the camera reads as a fog
@@ -2040,7 +2396,13 @@ function makeBalusterGeo(THREE) {
     [0.105, 0], [0.105, 0.055], [0.06, 0.10], [0.125, 0.26], [0.105, 0.40],
     [0.062, 0.58], [0.05, 0.74], [0.088, 0.82], [0.075, 0.92], [0.11, 0.96], [0.11, 1],
   ].map(([x, y]) => new THREE.Vector2(x, y));
-  return new THREE.LatheGeometry(pts, 12);
+  // 12 radial segments put a 30° facet on a turned baluster, and the balustrade
+  // runs the whole length of both walls at eye level — several hundred of them
+  // in frame at once. 28 costs one geometry. Creasing at 42° then keeps the
+  // profile's real corners (the fillets, the astragal) crisp while the swellings
+  // between them go smooth; a lathe smooths everything by default, which is why
+  // the turned mouldings had been reading as soft wax.
+  return crease(new THREE.LatheGeometry(pts, 28), 0.73);
 }
 
 // Rusticated masonry block: 1.32 × 0.5 drafted (bevelled) face extruding 0.5
@@ -2061,7 +2423,9 @@ function makeArchWallGeo(THREE, halfW, height, openHalf, springY, depth) {
   hole.absarc(0, springY, openHalf, Math.PI, 0, true);
   hole.lineTo(openHalf, 0); hole.closePath();
   outer.holes.push(hole);
-  return new THREE.ExtrudeGeometry(outer, { depth, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03, curveSegments: 36 });
+  return crease(new THREE.ExtrudeGeometry(outer, {
+    depth, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03, curveSegments: 48,
+  }), 0.56); // ≈32°: smooth round the intrados, sharp at every arris
 }
 
 // Keystone: a real wedge, wider at the top, springing from the arch crown.
@@ -2101,7 +2465,7 @@ function makePaneGeo(THREE, halfW, springY, baseY) {
   s.moveTo(-halfW, baseY); s.lineTo(-halfW, baseY + springY);
   s.absarc(0, baseY + springY, halfW, Math.PI, 0, true);
   s.lineTo(halfW, baseY); s.closePath();
-  return new THREE.ShapeGeometry(s, 36);
+  return new THREE.ShapeGeometry(s, 48);
 }
 
 // ---------- hall textures (canvas-painted; the page stays dependency-free) ----------
@@ -2111,22 +2475,26 @@ function makeMarbleTexture(THREE, renderer) {
   const c = document.createElement("canvas");
   c.width = c.height = 512;
   const g = c.getContext("2d");
-  g.fillStyle = "#f8f3ea";
+  g.fillStyle = "#f7f6fb";
   g.fillRect(0, 0, 512, 512);
   // soft mineral clouds for large-scale tonal depth
   for (let i = 0; i < 8; i++) {
     const x = Math.random() * 512, y = Math.random() * 512, r = 70 + Math.random() * 150;
     const grad = g.createRadialGradient(x, y, 0, x, y, r);
-    grad.addColorStop(0, "rgba(172, 164, 144, 0.06)");
-    grad.addColorStop(1, "rgba(172, 164, 144, 0)");
+    grad.addColorStop(0, "rgba(158, 152, 178, 0.06)");
+    grad.addColorStop(1, "rgba(158, 152, 178, 0)");
     g.fillStyle = grad;
     g.fillRect(x - r, y - r, r * 2, r * 2);
   }
   for (let i = 0; i < 42; i++) {
-    const warm = i % 6 === 5; // an occasional amber thread, echoing the floor
-    g.strokeStyle = warm
-      ? `rgba(168, 132, 88, ${(0.07 + Math.random() * 0.06).toFixed(3)})`
-      : `rgba(${118 + Math.random() * 36 | 0}, ${132 + Math.random() * 36 | 0}, ${158 + Math.random() * 36 | 0}, ${(0.10 + Math.random() * 0.09).toFixed(3)})`;
+    // Every sixth vein used to be amber. Veining is the one mark that survives
+    // at every distance — it tiles 6× across a 63-unit wall — so a warm thread
+    // in the ashlar tinted the biggest surfaces in the hall from close up.
+    // The accent thread is iris now; the rest are cool violet-greys.
+    const accent = i % 6 === 5;
+    g.strokeStyle = accent
+      ? `rgba(126, 112, 178, ${(0.07 + Math.random() * 0.06).toFixed(3)})`
+      : `rgba(${126 + Math.random() * 34 | 0}, ${124 + Math.random() * 34 | 0}, ${152 + Math.random() * 34 | 0}, ${(0.10 + Math.random() * 0.09).toFixed(3)})`;
     g.lineWidth = 0.6 + Math.random() * 1.6;
     g.beginPath();
     let x = Math.random() * 512, y = Math.random() * 512;
@@ -2139,10 +2507,10 @@ function makeMarbleTexture(THREE, renderer) {
     g.stroke();
   }
   // ashlar joints — courses and staggered headers, so the wall reads as masonry
-  g.strokeStyle = "rgba(138, 126, 106, 0.18)";
+  g.strokeStyle = "rgba(124, 118, 146, 0.18)";
   g.lineWidth = 2;
   for (const y of [128, 256, 384]) { g.beginPath(); g.moveTo(0, y); g.lineTo(512, y); g.stroke(); }
-  g.strokeStyle = "rgba(138, 126, 106, 0.12)";
+  g.strokeStyle = "rgba(124, 118, 146, 0.12)";
   for (let row = 0; row < 4; row++) {
     const off = row % 2 ? 64 : 0;
     for (let x = off; x <= 512; x += 128) {
@@ -2153,11 +2521,11 @@ function makeMarbleTexture(THREE, renderer) {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(6, 1);
-  tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  tex.anisotropy = Math.min(16, renderer.capabilities.getMaxAnisotropy());
   return tex;
 }
 
-// Honey travertine for the base courses: horizontal strata and pin-hole
+// Pale lilac limestone for the base courses: horizontal strata and pin-hole
 // pitting, kept very low-contrast — the drafted block bevels and per-block
 // tint do the talking; this just stops the stone reading as painted plastic.
 function makeTravertineTexture(THREE) {
@@ -2167,15 +2535,15 @@ function makeTravertineTexture(THREE) {
   const g = c.getContext("2d");
   let seed = 97;
   const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
-  g.fillStyle = "#efe8da";
+  g.fillStyle = "#eceaf3";
   g.fillRect(0, 0, S, S);
   // broad, feathered bedding drifts — mottle, not stripes: fine parallel
-  // banding at this tan reads as wood grain, exactly what we must avoid
+  // banding reads as wood grain, exactly what we must avoid
   for (let i = 0; i < 9; i++) {
     const y = rnd() * S, h = 60 + rnd() * 120, x = rnd() * S;
     const grad = g.createRadialGradient(x, y, 0, x, y, h);
-    grad.addColorStop(0, `rgba(168, 142, 104, ${(0.05 + rnd() * 0.05).toFixed(3)})`);
-    grad.addColorStop(1, "rgba(168, 142, 104, 0)");
+    grad.addColorStop(0, `rgba(148, 140, 172, ${(0.05 + rnd() * 0.05).toFixed(3)})`);
+    grad.addColorStop(1, "rgba(148, 140, 172, 0)");
     g.fillStyle = grad;
     g.save();
     g.translate(x, y);
@@ -2186,7 +2554,7 @@ function makeTravertineTexture(THREE) {
   }
   // pin-hole pitting, elongated along the bedding plane — the travertine tell
   for (let i = 0; i < 300; i++) {
-    g.fillStyle = `rgba(128, 104, 72, ${(0.06 + rnd() * 0.08).toFixed(3)})`;
+    g.fillStyle = `rgba(112, 106, 138, ${(0.06 + rnd() * 0.08).toFixed(3)})`;
     g.beginPath();
     g.ellipse(rnd() * S, rnd() * S, 1.2 + rnd() * 3, 0.6 + rnd() * 1.2, 0, 0, Math.PI * 2);
     g.fill();
@@ -2198,8 +2566,10 @@ function makeTravertineTexture(THREE) {
 }
 
 // Marble floor: naturally veined slabs (soft mineral clouds, thin branching
-// grey veins with faint halos, a few amber ones) under the processional
-// runner. The tile repeats 12× along the hall, so every mark is painted at
+// grey veins with faint halos, a few iris ones) under the processional
+// runner. The floor is the single largest surface in frame and the source of
+// the bounce light, so its base tone sets the colour of everything lit from
+// below; it was #f2ebdd, a sand. The tile repeats 12× along the hall, so every mark is painted at
 // y−H / y / y+H for a seamless vertical wrap. Seeded so the look is stable.
 function makeFloorTexture(THREE, renderer) {
   const W = 2048, H = 512; // one tile = 30 × 7.5 world units (isotropic ≈68px/unit)
@@ -2212,17 +2582,17 @@ function makeFloorTexture(THREE, renderer) {
     for (const dy of [-H, 0, H]) { g.save(); g.translate(0, dy); paint(); g.restore(); }
   };
 
-  g.fillStyle = "#f2ebdd";
+  g.fillStyle = "#f5f4fa";
   g.fillRect(0, 0, W, H);
 
-  // soft mineral clouds — sun-warmed sand and sea-grey patches of the stone
+  // soft mineral clouds — wisteria and cool grey patches of the stone
   wrap(() => {
     for (let i = 0; i < 14; i++) {
       const x = rnd() * W, y = rnd() * H, r = 90 + rnd() * 220;
-      const warm = rnd() < 0.5;
+      const violet = rnd() < 0.5;
       const grad = g.createRadialGradient(x, y, 0, x, y, r);
-      grad.addColorStop(0, warm ? "rgba(196, 176, 142, 0.055)" : "rgba(150, 164, 188, 0.06)");
-      grad.addColorStop(1, "rgba(150, 164, 188, 0)");
+      grad.addColorStop(0, violet ? "rgba(174, 164, 202, 0.055)" : "rgba(152, 158, 186, 0.06)");
+      grad.addColorStop(1, "rgba(152, 158, 186, 0)");
       g.fillStyle = grad;
       g.fillRect(x - r, y - r, r * 2, r * 2);
     }
@@ -2232,7 +2602,7 @@ function makeFloorTexture(THREE, renderer) {
   // crack line itself; some spawn a short branch part-way along
   const veins = [];
   for (let i = 0; i < 20; i++) {
-    const amber = i >= 14;
+    const amber = i >= 14; // (name kept: these are the accent veins, now iris)
     let x = rnd() * W, y = rnd() * H, ang = rnd() * Math.PI * 2;
     const pts = [[x, y]];
     const segs = 7 + Math.floor(rnd() * 9);
@@ -2276,22 +2646,25 @@ function makeFloorTexture(THREE, renderer) {
     }
     g.stroke();
   };
-  wrap(() => { for (const v of veins) strokeVein(v, v.lw * 4, "rgba(146, 140, 124, 0.06)"); }); // halos
+  wrap(() => { for (const v of veins) strokeVein(v, v.lw * 4, "rgba(138, 132, 158, 0.06)"); }); // halos
   wrap(() => {
     for (const v of veins) {
-      strokeVein(v, v.lw, v.amber ? "rgba(158, 116, 62, 0.22)" : "rgba(104, 116, 138, 0.25)");
+      strokeVein(v, v.lw, v.amber ? "rgba(118, 102, 176, 0.20)" : "rgba(110, 114, 142, 0.25)");
     }
   });
 
   // slab joints cut across the veining, then the runner floats on top
-  g.strokeStyle = "rgba(126, 116, 98, 0.22)";
+  g.strokeStyle = "rgba(116, 110, 138, 0.22)";
   g.lineWidth = 3;
   for (let x = 0; x <= W; x += 128) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
   for (let y = 0; y <= H; y += 128) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
-  const half = 110; // runner ≈ 1.6 world units each side, faded blue border lines
-  g.fillStyle = "rgba(196, 205, 208, 0.30)";
+  // The processional runner is the one line that leads the eye down the whole
+  // corridor to the vanishing point, so it carries the accent: --iris borders
+  // on a pale lilac field, straight off the stylesheet.
+  const half = 110; // runner ≈ 1.6 world units each side
+  g.fillStyle = "rgba(206, 202, 226, 0.30)";
   g.fillRect(W / 2 - half, 0, half * 2, H);
-  g.fillStyle = "rgba(78, 112, 146, 0.45)";
+  g.fillStyle = "rgba(109, 90, 230, 0.34)";
   g.fillRect(W / 2 - half - 10, 0, 6, H);
   g.fillRect(W / 2 + half + 4, 0, 6, H);
 
@@ -2299,6 +2672,6 @@ function makeFloorTexture(THREE, renderer) {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(1, 12);
-  tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  tex.anisotropy = Math.min(16, renderer.capabilities.getMaxAnisotropy());
   return tex;
 }
