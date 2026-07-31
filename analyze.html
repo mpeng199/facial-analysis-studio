@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Your sitting — Facial Analysis Studio</title>
+  <meta name="description" content="A private, research-grade facial analysis: measured, scored, and explained entirely in your browser." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>◐</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Italiana&family=Albert+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css?v=3" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="wordmark" href="index.html" title="Back to the hall">
+      <span class="mark">◐</span>
+      <h1>Facial Analysis Studio</h1>
+    </a>
+    <p class="privacy"><span class="dot"></span> Computed on your device. Photos are never uploaded.</p>
+  </header>
+
+  <!-- Three bays of the hall: tell us about you, sit for the portrait, read the report. -->
+  <nav class="stepper" aria-label="Progress">
+    <ol>
+      <li data-step="1" class="on" aria-current="step"><span class="rn">I</span><span class="name">About you</span></li>
+      <li data-step="2"><span class="rn">II</span><span class="name">Your photos</span></li>
+      <li data-step="3" data-locked><span class="rn">III</span><span class="name">Your report</span></li>
+    </ol>
+  </nav>
+
+  <main>
+    <!-- ===== STEP I: Intake ===== -->
+    <section class="step on" id="step1" data-step="1">
+      <header class="step-head">
+        <h2>About you</h2>
+        <p class="lede">Every score below is relative. These answers decide which norms you're measured against, and which advice is worth giving you.</p>
+      </header>
+
+      <div class="sheet">
+        <fieldset class="field-group">
+          <legend>Who your measurements are compared against</legend>
+          <div class="fields">
+            <label><span class="lbl">Sex <span class="req" title="Required">*</span></span>
+              <select id="sex">
+                <option value="f">Female</option>
+                <option value="m">Male</option>
+              </select>
+            </label>
+            <label>Age
+              <input id="age" type="number" min="10" max="90" placeholder="27" />
+            </label>
+            <label>Ethnic background
+              <select id="ethnicity">
+                <option value="european">European</option>
+                <option value="eastAsian">East Asian</option>
+                <option value="southAsian">South Asian</option>
+                <option value="african">African</option>
+                <option value="middleEastern">Middle Eastern</option>
+                <option value="hispanic">Hispanic / Latino</option>
+                <option value="other">Other / Mixed</option>
+              </select>
+            </label>
+          </div>
+          <p class="note">Norms differ by population. Measuring every face against one standard is the most common way these reports go wrong.</p>
+        </fieldset>
+
+        <fieldset class="field-group">
+          <legend>What you're aiming for</legend>
+          <div class="fields">
+            <label>Aesthetic goal
+              <select id="goal">
+                <option value="natural">Keep it natural / balanced</option>
+                <option value="feminine">More feminine</option>
+                <option value="masculine">More masculine</option>
+                <option value="youthful">More youthful</option>
+              </select>
+            </label>
+            <label>Cultural standard
+              <select id="culture">
+                <option value="neutral">Population-typical (neutral)</option>
+                <option value="western">Western</option>
+                <option value="eastAsian">East Asian</option>
+                <option value="regional">My regional trend</option>
+              </select>
+            </label>
+          </div>
+        </fieldset>
+
+        <details class="lifestyle">
+          <summary>Lifestyle factors <span class="opt">optional</span></summary>
+          <p class="note">These drive the part of your plan you can actually change. Sleep, body composition and sun all show up in the face.</p>
+          <div class="fields">
+            <label>Sleep (hours)
+              <input id="sleep" type="number" min="3" max="12" step="0.5" placeholder="7.5" />
+            </label>
+            <label>Body-fat feel
+              <select id="bodyfat">
+                <option value="lean">Lean</option>
+                <option value="average" selected>Average</option>
+                <option value="high">Higher</option>
+              </select>
+            </label>
+            <label>Stress
+              <select id="stress">
+                <option value="low">Low</option>
+                <option value="mid" selected>Moderate</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+            <label>Sun exposure
+              <select id="sun">
+                <option value="low">Low</option>
+                <option value="mid" selected>Moderate</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+          </div>
+        </details>
+
+        <fieldset class="field-group">
+          <legend>How precisely to measure</legend>
+          <div class="modes">
+            <label class="mode">
+              <input type="radio" name="acc" value="quick" checked />
+              <span class="mode-body">
+                <span class="mode-name">Quick</span>
+                <span class="mode-desc">One front photo. Add a side profile and tap a few points to get exact profile angles.</span>
+                <span class="mode-need">Needs 1–2 photos</span>
+              </span>
+            </label>
+            <label class="mode">
+              <input type="radio" name="acc" value="max" />
+              <span class="mode-body">
+                <span class="mode-name">Max</span>
+                <span class="mode-desc">Adds ¾ and profile shots from both sides, then triangulates a true 3D model. This is the closest you can get to studio photogrammetry.</span>
+                <span class="mode-need">Needs up to 5 photos</span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+      </div>
+
+      <div class="step-nav">
+        <a class="btn ghost" href="index.html">Back to the hall</a>
+        <button class="btn primary" type="button" data-goto="2">Continue to photos</button>
+      </div>
+    </section>
+
+    <!-- ===== STEP II: Capture ===== -->
+    <section class="step" id="step2" data-step="2">
+      <header class="step-head">
+        <h2>Your photos</h2>
+        <p class="lede">Face the camera straight on, neutral expression, hair off the face, even light. The clearer the photo, the truer the measurements.</p>
+      </header>
+
+      <div class="plates">
+        <!-- Frontal -->
+        <article class="plate">
+          <div class="plate-head">
+            <h3>Front <span class="req" title="Required">*</span></h3>
+            <span class="status" id="frontStatus"></span>
+          </div>
+          <div class="dropzone" id="frontDrop">
+            <input type="file" id="frontFile" accept="image/*" hidden />
+            <canvas id="frontCanvas" class="preview"></canvas>
+            <div class="dz-hint" id="frontHint">
+              <span class="dz-icon" aria-hidden="true">◐</span>
+              <span class="dz-lead">Drop a photo here</span>
+              <span class="dz-sub">or choose a file / use your camera</span>
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn ghost small" type="button" id="frontPick">Choose file</button>
+            <button class="btn ghost small" type="button" id="frontCam">Use camera</button>
+          </div>
+        </article>
+
+        <!-- Profile -->
+        <article class="plate">
+          <div class="plate-head">
+            <h3>Side profile</h3>
+            <span class="status" id="sideStatus"></span>
+          </div>
+          <div class="dropzone" id="sideDrop">
+            <input type="file" id="sideFile" accept="image/*" hidden />
+            <canvas id="sideCanvas" class="preview"></canvas>
+            <div class="dz-hint" id="sideHint">
+              <span class="dz-icon" aria-hidden="true">◑</span>
+              <span class="dz-lead">Drop a profile photo</span>
+              <span class="dz-sub">left or right, either works</span>
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn ghost small" type="button" id="sidePick">Choose file</button>
+          </div>
+          <p class="note" id="profileBlurb">Left or right profile. You'll tap a few points so the profile angles are exact.</p>
+          <div class="tapflow" id="tapflow" hidden>
+            <div class="tap-instruction" id="tapInstruction"></div>
+            <div class="row">
+              <button class="btn ghost small" type="button" id="tapUndo">Undo</button>
+              <button class="btn ghost small" type="button" id="tapRestart">Start over</button>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <!-- Multi-view (max mode) -->
+      <section class="sheet multiview" id="multiviewCard" hidden>
+        <h3>Extra angles</h3>
+        <p class="note">Max accuracy triangulates a 3D model from these. Add what you can: even one extra angle sharpens the result.</p>
+        <div class="row mv-row" id="multiviewSlots"></div>
+        <input type="file" id="mvFile" accept="image/*" hidden />
+      </section>
+
+      <!-- Webcam -->
+      <section class="webcam" id="webcam" hidden>
+        <div class="webcam-inner">
+          <video id="video" autoplay playsinline></video>
+          <div class="webcam-guide" aria-hidden="true"></div>
+        </div>
+        <div class="row">
+          <button class="btn primary" type="button" id="snap">Capture</button>
+          <button class="btn ghost" type="button" id="closeCam">Cancel</button>
+          <span class="status" id="camPose"></span>
+        </div>
+      </section>
+
+      <div class="step-nav">
+        <button class="btn ghost" type="button" data-goto="1">Back</button>
+        <button class="btn primary" type="button" id="analyzeBtn" disabled>Analyze my face</button>
+        <span class="status" id="analyzeStatus">Loading face model…</span>
+      </div>
+    </section>
+
+    <!-- ===== STEP III: Report ===== -->
+    <section class="step" id="step3" data-step="3">
+      <div class="report-empty" id="reportEmpty">
+        <span class="dz-icon" aria-hidden="true">◐</span>
+        <h2>Your report appears here</h2>
+        <p class="lede">Add a front photo and run the analysis. The full report is built right here on your device, in a moment.</p>
+        <button class="btn primary" type="button" data-goto="2">Go to photos</button>
+      </div>
+
+      <div class="report-shell" id="reportShell" hidden>
+        <aside class="report-rail" id="reportRail" aria-label="Report contents"></aside>
+        <div id="report" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p class="disclaimer">
+      This tool follows QOVES-style methodology (landmark cephalometrics, the four aesthetic tenets, and
+      evidence-based non-surgical protocols) using Google MediaPipe for landmarking. It is an educational
+      approximation, not a medical or psychological assessment. Measurements taken from 2D photos carry error,
+      results are estimates, and beauty is subjective and cultural.
+    </p>
+    <p class="footer-links">
+      <a href="privacy.html">Privacy policy</a>
+      <a href="terms.html">Terms of use</a>
+      <a href="index.html">Back to the hall</a>
+    </p>
+  </footer>
+
+  <script type="module" src="app.js"></script>
+  <script src="wizard.js"></script>
+</body>
+</html>

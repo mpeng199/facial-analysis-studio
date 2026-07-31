@@ -1,0 +1,37 @@
+# Static site: plain HTML/CSS/ES modules, no build step and no dependencies.
+# three.js and MediaPipe are loaded from a CDN at runtime.
+[build]
+  publish = "."
+  command = ""
+
+# publish = "." ships the whole folder, dev tooling included. /dev holds the
+# geometry self-check and the interpenetration auditor — not part of the site.
+# force = true is required: without it Netlify serves the matching static file
+# and the rule never fires, because redirects only apply when nothing matches.
+[[redirects]]
+  from = "/dev/*"
+  to = "/index.html"
+  status = 404
+  force = true
+
+# The sculpture scans are ~5 MB total, content-stable and never re-cut.
+# Cache them hard so only the first visit pays for them.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# HTML must revalidate, otherwise a deploy does not reach returning visitors.
+[[headers]]
+  for = "/*.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+# Photos are processed entirely in the browser; nothing here needs a camera
+# beyond the user's own capture, and nothing should be embeddable elsewhere.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "SAMEORIGIN"

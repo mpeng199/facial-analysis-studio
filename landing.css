@@ -1,0 +1,401 @@
+/* landing.css — Hall of Mirrors landing page.
+   Tokens: Pearl haze, violet Ink, Iris accent; Italiana display + Albert Sans body.
+   Progressive enhancement: static stacked page by default (no JS / no WebGL);
+   html.cinema turns chapters into fixed panels over the 3D corridor. */
+
+:root {
+  --pearl: #eceaf6;
+  --pearl-deep: #dcd8ee;
+  --ink: #1b1a24;
+  /* secondary text. #6c6a80 measured only 4.40:1 on the pearl ground — under
+     the 4.5:1 AA floor, and it carries the small print. Now ~6.9:1. */
+  --mist: #4f4d62;
+  --iris: #6d5ae6;
+  --veil: rgba(255, 255, 255, 0.42);
+  --hairline: rgba(27, 26, 36, 0.14);
+  /* Jewel-toned spectral gradient for the chapter headers. Deepened twice: the
+     original stops ran 4.16–5.24:1, a first pass took them to 6.4–7.6:1, and
+     they STILL read washed — because Italiana is a hairline face and a 5.6rem
+     hairline loses most of its measured contrast to antialiasing. Every stop
+     now clears 8.3:1 on the pearl scrim (up to 10:1). */
+  --aurora: linear-gradient(100deg, #3d1b9e 0%, #7a1246 36%, #0b4a52 68%, #14307e 100%);
+  --display: "Italiana", "Didot", serif;
+  --body: "Albert Sans", -apple-system, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0;
+  background: var(--pearl);
+  color: var(--ink);
+  font: 400 16px/1.6 var(--body);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- 3D canvas ---------- */
+#scene { display: none; }
+.cinema #scene {
+  display: block;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+}
+
+/* ---------- nav ---------- */
+.nav {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 30;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px clamp(16px, 4vw, 42px);
+  /* the corridor runs bright marble straight up to the top edge, so the old
+     0.75→0 wash left the wordmark sitting on raw hall */
+  background: linear-gradient(rgba(236, 234, 246, 0.94), rgba(236, 234, 246, 0.72) 45%, rgba(236, 234, 246, 0));
+}
+/* Italiana is a hairline face: at 1.15rem over marble the strokes vanish.
+   Same veil pill as .btn-nav so it reads as chrome, not as part of the hall. */
+.wordmark {
+  font-family: var(--display);
+  font-size: 1.15rem;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 16px 8px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--veil);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.wordmark .mark { color: var(--iris); font-size: 1.25rem; }
+.btn-nav {
+  font: 500 0.85rem/1 var(--body);
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  text-decoration: none;
+  padding: 11px 20px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  background: var(--veil);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  transition: border-color 0.2s, background 0.2s, color 0.5s;
+}
+.btn-nav:hover { border-color: var(--iris); background: rgba(255, 255, 255, 0.65); }
+
+/* ---------- chapters (static flow by default) ---------- */
+#chapters { position: relative; z-index: 10; }
+.chapter {
+  min-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 12vh clamp(20px, 7vw, 96px);
+}
+.align-center { align-items: center; text-align: center; }
+.align-left { align-items: flex-start; }
+.align-right { align-items: flex-end; text-align: right; }
+
+h1 {
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: clamp(3.4rem, 9vw, 7.2rem);
+  line-height: 1.02;
+  letter-spacing: 0.01em;
+  margin: 0 0 26px;
+}
+h2 {
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: clamp(2rem, 4.6vw, 3.4rem);
+  line-height: 1.12;
+  margin: 0 0 14px;
+  max-width: 14em;
+}
+.lede { font-size: clamp(1.02rem, 1.7vw, 1.28rem); color: var(--mist); margin: 0; }
+
+/* ---------- hero ground ----------
+   The hero was the one chapter with no scrim: its h1 fell across the navy
+   drapery and the blue frieze, where hairline Italiana strokes disappear.
+   Same pearl-scrim language as .panel, shaped to the text column. */
+.is-hero { position: relative; }
+.is-hero::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(1320px, 100vw);
+  height: min(860px, 100vh);
+  z-index: -1;
+  pointer-events: none;
+  /* long, many-stop falloff: a short one reads as a visible disc edge cutting
+     across the arches */
+  /* Measured, not eyeballed. Sampling the rendered canvas under the hero text
+     puts the DARKEST pixel it crosses at relative luminance 0.007 — the navy
+     drapery, effectively black. Against that ground the lede (--mist #4f4d62)
+     needs the scrim to hold alpha >= 0.631 to clear AA 4.5:1; the 0.44 stop
+     put its left end at ~0.61, i.e. ~4.4:1, a hair short. 0.52 lands it at
+     ~0.64. The hero looks hazier than the hall deserves because of this, and
+     that is the correct trade: the alternative is invisible body copy. */
+  background: radial-gradient(closest-side ellipse,
+    rgba(236, 234, 246, 0.95),
+    rgba(236, 234, 246, 0.9) 36%,
+    rgba(236, 234, 246, 0.72) 55%,
+    rgba(236, 234, 246, 0.52) 70%,
+    rgba(236, 234, 246, 0.18) 84%,
+    transparent);
+}
+/* the display face still needs a touch of body against a busy hall; a hair of
+   stroke thickens the thins without reading as a bolder weight */
+.is-hero h1 { -webkit-text-stroke: 0.45px var(--ink); }
+/* full-strength ink: the old opacity 0.78 knocked this to ~5:1 over a bright
+   hall, and it is the only prose in each chapter */
+.panel p { color: var(--ink); max-width: 30em; margin: 0; font-size: 1.08rem; }
+
+/* tenet moments: unboxed — text floats over the hall on a soft pearl scrim.
+   The scrim is the header's only ground, so it holds near-opaque through the
+   text block and only fades at the very edge; at 0.85/0.5 the bright marble
+   read straight through the letterforms. */
+.panel {
+  max-width: 720px;
+  padding: 56px 76px;
+  /* farthest-side, not closest-side: the box is far wider than it is tall, so
+     closest-side sized the ellipse to the HEIGHT and the ends of a 5.6rem
+     heading ran off the scrim onto raw hall — that was the washed-out tail. */
+  background: radial-gradient(farthest-side ellipse,
+    rgba(236, 234, 246, 0.97),
+    rgba(236, 234, 246, 0.93) 46%,
+    rgba(236, 234, 246, 0.78) 66%,
+    rgba(236, 234, 246, 0.45) 82%,
+    transparent);
+}
+.panel h2 {
+  font-size: clamp(3rem, 7.5vw, 5.6rem);
+  line-height: 1;
+  margin: 0 0 16px;
+  background: var(--aurora);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  /* stroke colour must be stated: it inherits `color`, which is transparent
+     here for the background-clip fill, so the default stroke draws nothing.
+     A deep neutral keeps the spectral fill in the stems and only firms up the
+     sub-pixel thins, where the gradient was being eaten by antialiasing. */
+  -webkit-text-stroke: 0.5px #2a1c4e;
+}
+.align-right .panel h2 { margin-left: auto; }
+.align-right .panel p { margin-left: auto; }
+
+/* hero cue */
+.cue {
+  margin-top: 8vh;
+  font: 500 0.78rem/1 var(--body);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--mist);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.cue-line {
+  width: 1px;
+  height: 56px;
+  background: linear-gradient(var(--mist), transparent);
+  display: block;
+}
+.cinema .cue-line { animation: cueDrop 2.2s ease-in-out infinite; }
+@keyframes cueDrop {
+  0% { transform: scaleY(0); transform-origin: top; }
+  55% { transform: scaleY(1); transform-origin: top; }
+  100% { transform: scaleY(1) translateY(10px); opacity: 0; }
+}
+
+/* finale */
+.finale .btn-cta {
+  display: inline-block;
+  margin: 22px 0 26px;
+  font: 600 1rem/1 var(--body);
+  letter-spacing: 0.03em;
+  color: #fff;
+  text-decoration: none;
+  padding: 18px 44px;
+  border-radius: 999px;
+  background: var(--iris);
+  box-shadow: 0 14px 40px rgba(109, 90, 230, 0.35);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.finale .btn-cta:hover { transform: translateY(-2px); box-shadow: 0 18px 48px rgba(109, 90, 230, 0.45); }
+.finale .btn-cta:focus-visible,
+.btn-nav:focus-visible,
+.wordmark:focus-visible {
+  outline: 2px solid var(--iris);
+  outline-offset: 3px;
+}
+.trust { font-size: 0.92rem; color: var(--ink); margin: 0 0 6px; }
+.smallprint { font-size: 0.78rem; color: var(--mist); margin: 0; }
+
+/* ---------- legal strip (always reachable, both modes) ---------- */
+.legal-strip {
+  position: fixed;
+  left: clamp(16px, 4vw, 42px);
+  bottom: 16px;
+  z-index: 30;
+  display: flex;
+  gap: 18px;
+}
+.legal-strip a {
+  font: 500 0.78rem/1 var(--body);
+  letter-spacing: 0.03em;
+  color: var(--mist);
+  text-decoration: none;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+.legal-strip a:hover { color: var(--ink); border-color: var(--iris); background: rgba(255, 255, 255, 0.75); }
+.legal-strip a:focus-visible { outline: 2px solid var(--iris); outline-offset: 3px; }
+@media (max-width: 720px) {
+  .legal-strip { gap: 8px; bottom: 10px; }
+  .legal-strip a { font-size: 0.72rem; padding: 6px 10px; }
+}
+
+/* ---------- depth gauge (cinema only) ---------- */
+.depth-gauge { display: none; }
+.cinema .depth-gauge {
+  display: block;
+  position: fixed;
+  right: clamp(10px, 2vw, 26px);
+  top: 50%;
+  transform: translateY(-50%);
+  height: 42vh;
+  width: 2px;
+  z-index: 20;
+}
+.gauge-track { position: absolute; inset: 0; background: var(--hairline); }
+.gauge-dot {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--iris);
+  box-shadow: 0 0 10px rgba(109, 90, 230, 0.6);
+}
+
+/* ---------- cinema mode: fixed panels over the corridor ---------- */
+.cinema #chapters { position: static; }
+.cinema .chapter {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(16px);
+  transition: opacity 0.7s ease, transform 0.7s ease, visibility 0s linear 0.7s;
+}
+.cinema .chapter.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity 0.7s ease, transform 0.7s ease, visibility 0s;
+}
+.cinema .chapter a { pointer-events: auto; }
+/* staggered rise for hero lines on first reveal */
+.cinema .chapter > *, .cinema .panel > * {
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.cinema .chapter:not(.visible) > * { opacity: 0; transform: translateY(12px); }
+.cinema .chapter.visible > * { opacity: 1; transform: none; }
+.cinema .chapter.visible > *:nth-child(2) { transition-delay: 0.08s; }
+.cinema .chapter.visible > *:nth-child(3) { transition-delay: 0.16s; }
+.cinema .chapter.visible > *:nth-child(4) { transition-delay: 0.24s; }
+.cinema .chapter.visible > *:nth-child(5) { transition-delay: 0.32s; }
+
+/* the scroll runway that drives the camera (last ~20% is the void leg) */
+.spacer { display: none; }
+.cinema .spacer { display: block; height: 900vh; }
+
+/* ---------- the veil: dimension-crossing flash ---------- */
+.veil-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.8s ease;
+}
+.veil-flash.on { opacity: 1; transition: opacity 0.12s ease; }
+
+/* in cinema the DOM finale is replaced by its 3D self beyond the mirror */
+.cinema .finale { display: none; }
+
+/* ---------- void dimension chrome ---------- */
+.wordmark { transition: color 0.5s; }
+body.void { background: #0b0a14; }
+body.void .nav { background: linear-gradient(rgba(11, 10, 20, 0.72), rgba(11, 10, 20, 0)); }
+body.void .wordmark,
+body.void .btn-nav { color: var(--pearl); }
+body.void .btn-nav {
+  border-color: rgba(236, 234, 246, 0.28);
+  background: rgba(27, 26, 36, 0.4);
+}
+body.void .btn-nav:hover { border-color: var(--iris); background: rgba(27, 26, 36, 0.6); }
+body.void .gauge-track { background: rgba(236, 234, 246, 0.22); }
+
+/* static (non-cinema) page gets a soft vertical aurora wash to stay beautiful without WebGL */
+body:not(.cinema) {
+  background:
+    radial-gradient(120% 60% at 50% -10%, rgba(183, 156, 255, 0.25), transparent 60%),
+    radial-gradient(90% 50% at 80% 40%, rgba(255, 183, 217, 0.18), transparent 65%),
+    radial-gradient(90% 50% at 15% 70%, rgba(156, 232, 255, 0.18), transparent 65%),
+    var(--pearl);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cinema .chapter,
+  .cinema .chapter > *,
+  .cinema .panel > * { transition: opacity 0.3s ease; transform: none !important; }
+  .cinema .cue-line { animation: none; }
+  .finale .btn-cta { transition: none; }
+  /* the crossing becomes a gentle crossfade instead of a flash */
+  .veil-flash { transition: opacity 0.5s ease; }
+  .veil-flash.on { transition: opacity 0.45s ease; }
+}
+
+@media (max-width: 720px) {
+  /* the wordmark pill is wider than bare text was: without this it wraps to
+     two lines and runs into the CTA */
+  .nav { padding: 10px 12px; }
+  .wordmark {
+    font-size: 0.95rem;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    gap: 7px;
+    padding: 7px 13px 7px 11px;
+  }
+  .wordmark .mark { font-size: 1.05rem; }
+  .btn-nav { padding: 9px 14px; font-size: 0.78rem; white-space: nowrap; }
+  .panel { padding: 40px 28px; }
+  .align-left, .align-right { align-items: center; text-align: center; }
+  .align-right .panel h2, .align-right .panel p { margin-left: 0; }
+  .cue { margin-top: 5vh; }
+}

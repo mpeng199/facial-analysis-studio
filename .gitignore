@@ -1,0 +1,11 @@
+# Netlify's local link state (machine-specific; the siteId is in CLAUDE.md)
+.netlify/
+
+# local tool caches
+.impeccable/
+
+# macOS
+.DS_Store
+
+# not used — this site has no build step and no dependencies
+node_modules/

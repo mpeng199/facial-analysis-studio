@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Facial Analysis Studio — See yourself clearly</title>
+  <meta name="description" content="Walk the hall of mirrors. A private, research-grade facial analysis — measured, scored, and explained entirely in your browser." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>◐</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Italiana&family=Albert+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="landing.css?v=9" />
+</head>
+<body>
+  <canvas id="scene" aria-hidden="true"></canvas>
+
+  <header class="nav">
+    <a class="wordmark" href="index.html"><span class="mark">◐</span> Facial Analysis Studio</a>
+    <a class="btn-nav" href="analyze.html">Begin analysis</a>
+  </header>
+
+  <main id="chapters">
+    <section class="chapter align-center is-hero" data-zone="0,0.11" id="ch-threshold">
+      <h1>See yourself<br />clearly.</h1>
+      <p class="lede">A private, research-grade facial analysis:<br />measured, scored, and explained in your browser.</p>
+      <p class="cue" aria-hidden="true">scroll to enter<span class="cue-line"></span></p>
+    </section>
+
+    <section class="chapter align-left" data-zone="0.135,0.235">
+      <div class="panel">
+        <h2>Symmetry.</h2>
+        <p>We mirror your features across the midline and measure how closely they agree.</p>
+      </div>
+    </section>
+
+    <section class="chapter align-right" data-zone="0.26,0.36">
+      <div class="panel">
+        <h2>Proportion.</h2>
+        <p>Your facial thirds, fifths, and width ratios, compared against established ideal ranges.</p>
+      </div>
+    </section>
+
+    <section class="chapter align-left" data-zone="0.385,0.485">
+      <div class="panel">
+        <h2>Averageness.</h2>
+        <p>How near each feature sits to population norms, tuned to your sex and ethnicity.</p>
+      </div>
+    </section>
+
+    <section class="chapter align-right" data-zone="0.51,0.61">
+      <div class="panel">
+        <h2>Dimorphism.</h2>
+        <p>Where your features fall on the feminine–masculine spectrum, scored toward your own goal.</p>
+      </div>
+    </section>
+
+    <section class="chapter align-center finale" data-zone="0.64,0.78">
+      <h2>Meet your reflection.</h2>
+      <a class="btn-cta" href="analyze.html">Begin analysis</a>
+      <p class="trust">100% private. Your photo never leaves this device.</p>
+      <p class="smallprint">Educational estimates rooted in facial-aesthetics research, not medical advice.</p>
+    </section>
+  </main>
+
+  <div class="depth-gauge" aria-hidden="true">
+    <span class="gauge-track"></span>
+    <span class="gauge-dot"></span>
+  </div>
+
+  <!-- Fixed rather than in the finale: in cinema mode the DOM finale is
+       replaced by its 3D self, so links inside it would be unreachable. -->
+  <nav class="legal-strip" aria-label="Legal">
+    <a href="privacy.html">Privacy policy</a>
+    <a href="terms.html">Terms of use</a>
+  </nav>
+
+  <div class="veil-flash" aria-hidden="true"></div>
+  <div class="spacer" aria-hidden="true"></div>
+
+  <script type="importmap">
+    { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+    } }
+  </script>
+  <script type="module" src="landing.js?v=59"></script>
+</body>
+</html>

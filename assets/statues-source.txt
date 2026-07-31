@@ -1,0 +1,22 @@
+Niche and centrepiece figures — 3D scans of the plaster casts in the Royal
+Cast Collection, published by SMK – National Gallery of Denmark (smkmuseum)
+on Thingiverse, mirrored at archive.org/details/thingiverse-<id>.
+License: CC0 1.0 Public Domain Dedication — no attribution required.
+
+  discobolus.glb        Discobolus, after Myron            thing:1894078  KAS1549
+  doryphoros.glb        Doryphoros, after Polykleitos      thing:1894105  KAS11
+  venus-de-milo.glb     Aphrodite of Melos (Venus de Milo) thing:1892710  KAS434
+  apollo-belvedere.glb  Apollo Belvedere                   thing:1892713  KAS353
+  kore.glb              Kore in chiton and epiblema        thing:1894088  KAS1800
+  zeus-artemision.glb   Zeus or Poseidon from Artemision   thing:1894099  KAS2100
+
+Pipeline (the five added 2026-07-21): the published *_10pct.obj → trimesh →
+scaled mm→m, recentred with the base at y=0 and the figure centred in x/z →
+`gltf-transform draco --quantize-position 14`. Full scan resolution is kept
+(210k–290k triangles each); Draco takes each file from ~5 MB to ~400 KB.
+None of the scans carry UVs or usable normals — never give the figure
+material a map, and compute vertex normals on load.
+
+discobolus.glb predates that pass and is still the uncompressed, MILLIMETRE-
+scale export the Void centrepiece hard-codes (scale 4.9/1682). The niche code
+fits every figure from its own bounding box, so it does not care about units.
