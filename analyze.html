@@ -9,9 +9,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Italiana&family=Albert+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=4" />
+  <link rel="stylesheet" href="styles.css?v=6" />
 </head>
 <body>
+  <!-- Wordmark and stepper ride together: one sticky band, so they can't drift
+       apart or tear against each other while the page scrolls under them. -->
+  <div class="chrome">
   <header class="topbar">
     <a class="wordmark" href="index.html" title="Back to the hall">
       <span class="mark">◐</span>
@@ -28,6 +31,7 @@
       <li data-step="3" data-locked><span class="rn">III</span><span class="name">Your report</span></li>
     </ol>
   </nav>
+  </div>
 
   <main>
     <!-- ===== STEP I: Intake ===== -->
@@ -264,7 +268,7 @@
     </p>
   </footer>
 
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=2"></script>
   <script src="wizard.js"></script>
 </body>
 </html>

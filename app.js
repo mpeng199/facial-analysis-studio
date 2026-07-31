@@ -35,9 +35,17 @@ const state = {
 function fileToImage(file) {
   return new Promise((res, rej) => {
     const img = new Image();
-    img.onload = () => res(img);
-    img.onerror = rej;
-    img.src = URL.createObjectURL(file);
+    const url = URL.createObjectURL(file);
+    img.onload = () => { URL.revokeObjectURL(url); res(img); };
+    // accept="image/*" offers HEIC, which no browser but Safari decodes. Say so:
+    // a rejection nobody explains reads as "the upload button is broken".
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      rej(new Error(/heic|heif/i.test(file.type + file.name)
+        ? `Can't read “${file.name}” — iPhone HEIC photos don't decode in this browser. Export or screenshot it as JPEG first.`
+        : `Can't read “${file.name}” — try a JPEG or PNG.`));
+    };
+    img.src = url;
   });
 }
 function drawToCanvas(img, canvas) {
@@ -70,20 +78,28 @@ async function setFrontImage(img) {
   refreshAnalyzeBtn();
 }
 
-function wireDropzone(dropId, fileId, pickId, onImage) {
+function wireDropzone(dropId, fileId, pickId, onImage, statusId) {
   const dz = $(dropId), file = $(fileId);
   const open = () => file.click();
+  // Every failure on this path has to reach the plate. Anything that only
+  // rejects a promise leaves the page looking like it ignored the photo.
+  const take = async (f) => {
+    if (!f) return;
+    try { await onImage(await fileToImage(f)); }
+    catch (err) { $(statusId).textContent = err.message; }
+    file.value = ""; // so re-picking the same file fires change again
+  };
   $(dropId).addEventListener("click", (e) => { if (e.target.tagName !== "CANVAS" || !dz.classList.contains("tapping")) open(); });
   if (pickId) $(pickId).addEventListener("click", (e) => { e.stopPropagation(); open(); });
-  file.addEventListener("change", async () => { if (file.files[0]) onImage(await fileToImage(file.files[0])); });
+  file.addEventListener("change", () => take(file.files[0]));
   dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("drag"); });
   dz.addEventListener("dragleave", () => dz.classList.remove("drag"));
-  dz.addEventListener("drop", async (e) => {
+  dz.addEventListener("drop", (e) => {
     e.preventDefault(); dz.classList.remove("drag");
-    if (e.dataTransfer.files[0]) onImage(await fileToImage(e.dataTransfer.files[0]));
+    take(e.dataTransfer.files[0]);
   });
 }
-wireDropzone("frontDrop", "frontFile", "frontPick", setFrontImage);
+wireDropzone("frontDrop", "frontFile", "frontPick", setFrontImage, "frontStatus");
 
 // ---------------------------------------------------------------------------
 // Webcam
@@ -138,7 +154,7 @@ async function setSideImage(img) {
   state.side = { img, canvas, w, h, taps: {}, tapIdx: 0, done: false };
   startTapFlow();
 }
-wireDropzone("sideDrop", "sideFile", "sidePick", setSideImage);
+wireDropzone("sideDrop", "sideFile", "sidePick", setSideImage, "sideStatus");
 
 function startTapFlow() {
   $("tapflow").hidden = false;
@@ -218,8 +234,10 @@ function buildMvSlots() {
 }
 $("mvFile").addEventListener("change", async (e) => {
   if (!e.target.files[0]) return;
-  const img = await fileToImage(e.target.files[0]);
   const i = +e.target.dataset.slot;
+  let img;
+  try { img = await fileToImage(e.target.files[0]); }
+  catch (err) { $("multiviewSlots").children[i].title = err.message; return; }
   const canvas = document.createElement("canvas");
   const { w, h } = drawToCanvas(img, canvas);
   const lm = await getLandmarker();

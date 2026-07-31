@@ -83,6 +83,42 @@ p { margin: 0; }
   border-radius: 4px;
 }
 
+/* ---------- sticky chrome ---------- */
+/* Analyze stacks two bars. Sticking them separately means two translucent
+   layers with their own blur and their own hairline, and they tear against
+   each other as the page slides past. One band, one blur, no magic offset. */
+.chrome {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  /* mostly opaque: a backdrop blur repaints a frame behind the scroll, and at
+     0.82 you can see it smear. At 0.92 the frost still reads, the lag doesn't. */
+  background: rgba(236, 234, 246, 0.92);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+/* The band lifts off the page as you scroll, tied to the scroll position itself
+   rather than snapping at a threshold. Native scroll timeline: no JS, no listener. */
+@supports (animation-timeline: scroll()) {
+  .chrome {
+    animation: chrome-lift linear both;
+    animation-timeline: scroll();
+    animation-range: 0 140px;
+  }
+  @keyframes chrome-lift {
+    from { box-shadow: 0 6px 18px rgba(28, 26, 46, 0); }
+    to { box-shadow: 0 6px 18px rgba(28, 26, 46, 0.09); }
+  }
+  @media (prefers-reduced-motion: reduce) { .chrome { animation: none; } }
+}
+.chrome > .topbar,
+.chrome > .stepper {
+  position: static;
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 /* ---------- topbar ---------- */
 .topbar {
   position: sticky;
@@ -126,15 +162,7 @@ p { margin: 0; }
 }
 
 /* ---------- stepper: the three bays ---------- */
-.stepper {
-  position: sticky;
-  top: 53px;
-  z-index: 30;
-  background: rgba(236, 234, 246, 0.82);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-bottom: 1px solid var(--line-soft);
-}
+.stepper { border-bottom: 1px solid var(--line-soft); }
 .stepper ol {
   display: flex;
   gap: clamp(6px, 3vw, 40px);
@@ -454,12 +482,15 @@ select:focus, input:focus {
 }
 .plate-head {
   display: flex;
+  flex-wrap: wrap; /* a long status message wraps under the title instead of crushing it */
   justify-content: space-between;
   align-items: baseline;
   gap: 10px;
   margin-bottom: 12px;
 }
+.plate-head .status { flex: 1; min-width: 12ch; text-align: right; }
 .plate-head h3 {
+  flex: none;
   font-family: var(--display);
   font-size: 1.35rem;
   letter-spacing: 0.02em;
