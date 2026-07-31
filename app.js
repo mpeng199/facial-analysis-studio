@@ -88,22 +88,28 @@ wireDropzone("frontDrop", "frontFile", "frontPick", setFrontImage);
 // ---------------------------------------------------------------------------
 // Webcam
 // ---------------------------------------------------------------------------
-let stream = null, videoLoop = null;
-$("frontCam").addEventListener("click", async (e) => {
-  e.stopPropagation();
-  $("webcam").hidden = false;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 1280 } });
-    const v = $("video"); v.srcObject = stream;
-    const vlm = await getVideoLandmarker();
-    videoLoop = setInterval(() => {
-      if (v.readyState < 2) return;
-      const r = vlm.detectForVideo(v, performance.now());
-      const pose = r.facialTransformationMatrixes?.[0] ? G.headPose(r.facialTransformationMatrixes[0].data) : null;
-      $("camPose").textContent = pose ? `yaw ${pose.yaw.toFixed(0)}° · pitch ${pose.pitch.toFixed(0)}° · roll ${pose.roll.toFixed(0)}°` : "align your face";
-    }, 200);
-  } catch (err) { $("camPose").textContent = "Camera unavailable: " + err.message; }
-});
+let stream = null, videoLoop = null, camTarget = setFrontImage;
+function wireCam(btnId, onImage) {
+  $(btnId).addEventListener("click", async (e) => {
+    e.stopPropagation();
+    camTarget = onImage;
+    $("webcam").hidden = false;
+    $("webcam").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 1280 } });
+      const v = $("video"); v.srcObject = stream;
+      const vlm = await getVideoLandmarker();
+      videoLoop = setInterval(() => {
+        if (v.readyState < 2) return;
+        const r = vlm.detectForVideo(v, performance.now());
+        const pose = r.facialTransformationMatrixes?.[0] ? G.headPose(r.facialTransformationMatrixes[0].data) : null;
+        $("camPose").textContent = pose ? `yaw ${pose.yaw.toFixed(0)}° · pitch ${pose.pitch.toFixed(0)}° · roll ${pose.roll.toFixed(0)}°` : "align your face";
+      }, 200);
+    } catch (err) { $("camPose").textContent = "Camera unavailable: " + err.message; }
+  });
+}
+wireCam("frontCam", setFrontImage);
+wireCam("sideCam", setSideImage);
 $("closeCam").addEventListener("click", closeCam);
 function closeCam() {
   if (videoLoop) clearInterval(videoLoop);
@@ -116,7 +122,7 @@ $("snap").addEventListener("click", async () => {
   c.width = v.videoWidth; c.height = v.videoHeight;
   c.getContext("2d").drawImage(v, 0, 0);
   const img = new Image();
-  img.onload = () => setFrontImage(img);
+  img.onload = () => camTarget(img);
   img.src = c.toDataURL("image/png");
   closeCam();
 });
