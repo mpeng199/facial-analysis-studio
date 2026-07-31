@@ -13,9 +13,28 @@ Live: <https://facial-analysis-studio.netlify.app>
 Netlify project `facial-analysis-studio` · siteId `72bbbc18-4ac6-4de8-ba44-2d2bb3541ba8`
 (also in `.netlify/state.json`) · team `6a62ba9f840332e3e686078a`.
 
-Deploy is two steps, and it has to be an agent action — there is no local
-`netlify` CLI and no stored credentials on this machine, so a plain script or a
-Stop hook cannot do it unaided. The upload token comes from the MCP:
+Repo: <https://github.com/mpeng199/facial-analysis-studio> (`origin`, branch `main`).
+
+### Preferred: commit and push
+
+Once Netlify's GitHub CI is connected, **a push to `main` is the deploy**. So
+finish the work, then:
+
+```bash
+git add -A && git commit -m "…" && git push
+```
+
+Check `git remote -v` and that the last deploy on Netlify came from git before
+assuming CI is live. **Do not mix the two paths**: a manual folder deploy while
+CI is connected produces a deploy the next push simply replaces, and leaves the
+live site out of step with `main`. If you deploy manually, commit and push the
+same state immediately after.
+
+### Fallback: manual folder deploy (used before CI was connected)
+
+Two steps, and it has to be an agent action — there is no local `netlify` CLI
+and no stored credentials on this machine, so a plain script or a Stop hook
+cannot do it unaided. The upload token comes from the MCP:
 
 1. Call the Netlify MCP `netlify-deploy-services-updater` with
    `{operation: "deploy-site", params: {siteId: "72bbbc18-…"}}`.
@@ -26,6 +45,10 @@ Stop hook cannot do it unaided. The upload token comes from the MCP:
 
 Known gotcha: the returned proxy path has sometimes contained a double slash
 (`netlify-mcp.netlify.app//proxy/`), which 404s. Normalise it to one slash.
+
+The MCP cannot link the repo to Netlify — its project operations are limited to
+naming, env vars, forms and access controls. That link is a one-time OAuth step
+in the Netlify UI.
 
 ### Deploy only verified work
 
