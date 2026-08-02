@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Report preview (dev) — Facial Analysis Studio</title>
+  <!--
+    Dev-only harness. The report is the hardest part of the site to look at,
+    because reaching it normally needs a camera, a face and a working MediaPipe
+    download. This builds the same report from a synthetic head — the one in
+    test.html, deliberately knocked out of true so the scores span good, warn
+    and bad — and renders it through the real styles.css and render.js.
+
+    Not part of the site: /dev/* is 404'd in netlify.toml. Serve the repo root
+    (preview_start "hall") and open /dev/report-preview.html.
+  -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Italiana&family=Albert+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../styles.css" />
+</head>
+<body>
+  <div class="chrome">
+    <header class="topbar">
+      <a class="wordmark" href="../analyze.html"><span class="mark">◐</span><h1>Facial Analysis Studio</h1></a>
+      <p class="privacy"><span class="dot"></span> dev preview — synthetic face, no camera</p>
+    </header>
+  </div>
+
+  <main>
+    <section class="step on" data-step="3">
+      <!-- ids and the initial `hidden` mirror analyze.html: wizard.js builds the
+           contents rail off the hidden→visible transition on #report. -->
+      <div class="report-empty" id="reportEmpty" hidden></div>
+      <div class="report-shell" id="reportShell">
+        <aside class="report-rail" id="reportRail" aria-label="Report contents"></aside>
+        <div id="report" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    import * as G from "../geometry3d.js";
+    import { IDX } from "../landmarks.js";
+    import { analyze } from "../analysis.js";
+    import { buildReportHTML } from "../render.js";
+
+    // ---- synthetic head (test.html's, nudged off-centre so scores vary) ----
+    const F = Array.from({ length: 478 }, () => ({ x: 0, y: 0, z: 0 }));
+    const set = (i, x, y, z = 0) => F[i] = { x, y, z };
+    set(IDX.eyeROuter, -31, 1.5); set(IDX.eyeRInner, -10, 0);
+    set(IDX.eyeLInner, 10, -0.5); set(IDX.eyeLOuter, 30, 0);
+    set(IDX.eyeRTop, -20, -5); set(IDX.eyeRBottom, -20, 5);
+    set(IDX.eyeLTop, 20, -5.5); set(IDX.eyeLBottom, 20, 4.5);
+    set(IDX.irisRCenter, -20, 0); IDX.irisRRing.forEach((i, k) => set(i, -20 + 6 * Math.cos(k * Math.PI / 2), 6 * Math.sin(k * Math.PI / 2)));
+    set(IDX.irisLCenter, 20, 0); IDX.irisLRing.forEach((i, k) => set(i, 20 + 6 * Math.cos(k * Math.PI / 2), 6 * Math.sin(k * Math.PI / 2)));
+    set(IDX.glabella, 0, -10); set(IDX.foreheadTop, 0, -58); set(IDX.nasion, 0, -8, 5);
+    set(IDX.noseTip, 0, 20, 22); set(IDX.subnasale, 0, 30, 10);
+    set(IDX.alaR, -14, 28, 5); set(IDX.alaL, 13.5, 28, 5);
+    set(IDX.lipTop, 0, 44, 8); set(IDX.lipInnerTop, 0, 46.4, 8); set(IDX.lipInnerBottom, 0, 49, 8); set(IDX.lipBottom, 0, 53, 8);
+    set(IDX.mouthR, -22, 47, 3); set(IDX.mouthL, 21, 47.5, 3);
+    set(IDX.browRApex, -20, -17, 2); set(IDX.browLApex, 20, -18.5, 2);
+    set(IDX.zygoR, -55, 10, -10); set(IDX.zygoL, 54, 10, -10);
+    set(IDX.cheekR, -45, 20, -5); set(IDX.cheekL, 44, 21, -5);
+    set(IDX.gonionR, -47, 62, -15); set(IDX.gonionL, 46, 60, -15);
+    set(IDX.menton, 0, 96, 5);
+
+    const { pts: norm } = G.poseNormalize(F, IDX);
+    const iris = G.irisScale(F, IDX);
+
+    // ---- a profile, so the side-view metrics render too ----
+    const P = {
+      glabella: { x: 8, y: -10 }, nasion: { x: 4, y: -4 }, pronasale: { x: 34, y: 20 },
+      subnasale: { x: 14, y: 30 }, labSup: { x: 18, y: 44 }, labInf: { x: 16, y: 52 },
+      pogonion: { x: 14, y: 84 }, menton: { x: 8, y: 96 },
+      gonion: { x: -34, y: 66 }, tragion: { x: -52, y: 6 },
+      trichion: { x: -6, y: -58 },
+    };
+
+    const R = analyze({
+      F: norm, P, mmPerPx: iris.mmPerPx, blendshapes: [], dims: { w: 300, h: 400 },
+      meta: {
+        sex: "f", age: 27, ethnicity: "european", goal: "natural", culture: "neutral",
+        accuracy: "quick", lifestyle: { sleep: 7, bodyfat: "average", stress: "mid", sun: "mid" },
+        pose: { yaw: 3, pitch: -2, roll: 1 },
+        quality: { level: "good", notes: ["Synthetic head — this preview exists to check layout, not anatomy."] },
+        scaleSource: "iris (~11.7 mm)", scaleNote: "profile angles from tapped landmarks",
+      },
+    });
+
+    const report = document.getElementById("report");
+    report.innerHTML = buildReportHTML(R);
+
+    // The two canvases are drawn by app.js from the real photo; here they'd be
+    // empty boxes, so drop them and keep the rest of the layout honest.
+    report.querySelectorAll(".canvas-wrap figure").forEach((f) => f.remove());
+    report.hidden = false;   // the signal wizard.js waits on to build the rail
+
+    console.log("report built:", {
+      sections: report.querySelectorAll(".section-title").length,
+      parts: report.querySelectorAll(".part-head").length,
+      tooltips: report.querySelectorAll(".qm").length,
+      untipped: [...report.querySelectorAll(".metric .mlabel")].filter((m) => !m.querySelector(".qm")).map((m) => m.textContent),
+    });
+  </script>
+  <script src="../wizard.js"></script>
+</body>
+</html>

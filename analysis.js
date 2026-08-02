@@ -508,77 +508,82 @@ function agingTrajectory(age, results, sex) {
 // ---------------------------------------------------------------------------
 // Protocol knowledge base — non-surgical first, science-cited.
 // Each item: tier, what, how, science, timeline, difficulty(1–3), goals[].
+//
+// `what` and `how` are the instructions, and part one of the report quotes them
+// verbatim to someone who has never read a report like this — so they stay in
+// ordinary words, and any clinical term that earns its place is glossed inline.
+// `science` is the citation layer and keeps its technical register.
 // ---------------------------------------------------------------------------
 const KB = {
   symmetry: [{
-    tier: "Habits", what: "Correct sleep side and chewing side; avoid chronic face-resting.",
-    how: "Alternate chewing side, back-sleep with a contour pillow, address any unilateral clenching.",
+    tier: "Habits", what: "Stop favouring one side when you sleep and chew.",
+    how: "Swap chewing sides through the day, sleep on your back on a contour pillow, and get one-sided jaw clenching looked at.",
     science: "Minor postural/soft-tissue asymmetry is modifiable; skeletal asymmetry is not — sets honest expectations (Farkas anthropometry).",
     timeline: "3–6 months", difficulty: 2,
   }],
   canthalTilt: [{
-    tier: "Grooming", what: "Optical lift with brow shape and lateral eyeliner/shadow.",
-    how: "Shape the brow tail slightly upward; extend liner outward-up to recruit a perceived lift.",
+    tier: "Grooming", what: "Create the look of a lift with brow shape and outer-corner makeup.",
+    how: "Angle the tail of the brow slightly upward, and take liner or shadow out and up past the outer corner of the eye.",
     science: "Upturned canthal axis is a validated youth/femininity cue (periorbital attractiveness literature); makeup shifts perception, not anatomy.",
-    timeline: "Immediate (perceptual)", difficulty: 1,
+    timeline: "Right away", difficulty: 1,
   }],
   browPosition: [{
-    tier: "Grooming", what: "Reshape brow height and arch to the sex-appropriate target.",
-    how: "For a feminine target raise the arch apex and clean the underline; for masculine keep it straighter and lower.",
+    tier: "Grooming", what: "Reshape the height and arch of your brows toward your target.",
+    how: "For a softer, more feminine look, lift the peak of the arch and tidy the line underneath. For a stronger look, keep the brow straighter and lower.",
     science: "Brow position is a strong dimorphism signal and is fully soft-tissue/hair — high improvability.",
     timeline: "1–2 weeks", difficulty: 1, goals: ["feminine", "masculine", "youthful"],
   }],
   lipRatio: [{
-    tier: "Grooming", what: "Balance upper:lower lip visually (overline sparingly / lip care).",
-    how: "Hydrate and gently overline the thinner lip; a small filler note exists but stays optional.",
+    tier: "Grooming", what: "Even out how full your top and bottom lip look.",
+    how: "Keep lips hydrated, and line just outside the natural edge of the thinner one. Filler is an option here but is not the first step.",
     science: "Lower-lip-dominant fullness (~1:1.6) reads youthful and feminine; perception shifts with liner before any procedure.",
-    timeline: "Immediate (perceptual)", difficulty: 1, goals: ["feminine", "youthful"],
+    timeline: "Right away", difficulty: 1, goals: ["feminine", "youthful"],
   }],
   fwhr: [{
-    tier: "Fitness", what: "Reduce facial adiposity to de-emphasise width.",
-    how: "Sustained body-fat reduction (recomp), sodium/alcohol control to cut water retention.",
+    tier: "Fitness", what: "Carry less facial fat, so your face reads narrower.",
+    how: "Steady body-fat loss over months rather than a crash diet, plus less salt and alcohol in the evening to cut water retention.",
     science: "Higher FWHR reads more dominant/less trustworthy; facial fat exaggerates bizygomatic width (Carré & McCormick 2008).",
     timeline: "3–9 months", difficulty: 2, goals: ["feminine", "youthful"],
   }],
   jawWidth: [{
-    tier: "Fitness", what: "Lower body fat + posture to sharpen (not widen) the jaw.",
-    how: "Recomposition, forward-head correction, and mewing/tongue posture for tone.",
+    tier: "Fitness", what: "Sharpen the jawline with body fat and posture — not by widening it.",
+    how: "Lose fat gradually while keeping muscle, fix a head-forward posture, and rest your tongue against the roof of your mouth.",
     science: "Perceived jaw definition responds to fat and posture; bony bigonial width is fixed (orthognathic norms, Riolo 1974).",
     timeline: "4–9 months", difficulty: 2,
   }],
   gonial: [{
-    tier: "Habits", what: "Tongue posture + masseter conditioning for a crisper angle.",
-    how: "Consistent mewing/tongue-to-palate rest posture; treat bruxism if the masseter is overbuilt.",
+    tier: "Habits", what: "Use tongue posture, and deal with any overbuilt chewing muscle.",
+    how: "Rest your tongue flat against the roof of your mouth whenever you're not talking or eating. If you grind your teeth, treat it — grinding thickens the muscle at the jaw corner.",
     science: "Gonial angle norms ≈118–130° (Riolo); soft-tissue drape and masseter bulk are the modifiable layer, the bone is not.",
     timeline: "6–12 months", difficulty: 3,
   }],
   lowerThird: [{
-    tier: "Fitness", what: "Manage submental fullness so a long lower third stays clean.",
-    how: "Body-fat control, posture, and neck/platysma conditioning.",
+    tier: "Fitness", what: "Keep the area under the chin clean, so a long lower face stays defined.",
+    how: "Control body fat, keep your head over your shoulders rather than forward, and work the muscles at the front of the neck.",
     science: "Vertical proportions are skeletal, but the soft-tissue read of the lower third is fat/posture-driven.",
     timeline: "3–9 months", difficulty: 2,
   }],
   noseWidth: [{
-    tier: "Grooming", what: "Contour to narrow the nasal read; optimise lighting.",
-    how: "Soft contour down the dorsum, avoid flat frontal lighting that widens the nose.",
+    tier: "Grooming", what: "Make the nose read narrower with shading and better light.",
+    how: "Blend a soft shadow down each side of the bridge, and avoid flat light coming straight at your face — it flattens and widens the nose.",
     science: "Alar width relative to intercanthal drives the 'wide' read; contour changes perception only (ethnic norms respected).",
-    timeline: "Immediate (perceptual)", difficulty: 1,
+    timeline: "Right away", difficulty: 1,
   }],
   eLineUpper: [{
-    tier: "Habits", what: "Address lip protrusion signals (often dental).",
-    how: "Get a dental/ortho opinion if lips sit well ahead of the E-line — bimaxillary protrusion is orthodontic, not cosmetic.",
+    tier: "Habits", what: "Get lips that sit well forward checked — it's usually the teeth.",
+    how: "See a dentist or orthodontist. When both jaws sit forward, that's an orthodontic problem with an orthodontic fix, not something a cosmetic treatment addresses.",
     science: "Ricketts E-line: lips should sit slightly behind (upper −4 to −6mm). Protrusion frequently flags malocclusion.",
-    timeline: "12–30 months (ortho)", difficulty: 3,
+    timeline: "12–30 months (braces)", difficulty: 3,
   }],
   skin: [{
-    tier: "Skincare", what: "Foundational routine: sunscreen, retinoid, gentle cleanse.",
-    how: "Daily SPF 30+, nightly retinoid (build tolerance), moisturiser; add vitamin C in AM.",
+    tier: "Skincare", what: "Get the basics right: sunscreen, a retinoid, and a gentle cleanser.",
+    how: "SPF 30 or higher every morning, a retinoid at night (start twice a week and build up), moisturiser on top; vitamin C in the morning if you want a fourth step.",
     science: "Skin quality (evenness, texture) is one of QOVES' regions and the highest-ROI non-surgical lever; photoprotection is the #1 evidence-based anti-aging step.",
     timeline: "8–16 weeks", difficulty: 1, always: true,
   }],
   periorbital: [{
-    tier: "Habits", what: "Sleep, sodium and hydration for under-eye and puffiness.",
-    how: "7–9h sleep, lower evening sodium/alcohol, adequate water; cold compress AM.",
+    tier: "Habits", what: "Fix under-eye puffiness with sleep, salt and water.",
+    how: "7–9 hours of sleep, less salt and alcohol in the evening, enough water through the day, and something cold on the eyes in the morning.",
     science: "Periorbital puffiness and dark circles are partly fluid/lifestyle-mediated — reversible without procedures.",
     timeline: "2–6 weeks", difficulty: 1, always: true,
   }],

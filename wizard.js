@@ -45,14 +45,28 @@
   };
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+  // A section heading now ends in a `?` button, whose text content is a literal
+  // "?" — read the leading text node instead of the whole subtree, or every
+  // rail entry picks up a trailing question mark.
+  const headingText = (t) => {
+    const first = t.firstChild;
+    return (first && first.nodeType === 3 ? first.textContent : t.textContent).trim();
+  };
+
   function buildRail() {
     const titles = [...report.querySelectorAll(".section-title")];
     if (!titles.length) return;
-    rail.innerHTML = `<p class="rail-head">Contents</p>` + titles.map((t, i) => {
+    rail.innerHTML = titles.map((t, i) => {
       const num = roman(i + 1);
       t.id = `sec-${i + 1}`;
       t.dataset.num = num;                       // CSS renders it as the plate number
-      return `<a href="#sec-${i + 1}"><span class="rn">${num}</span>${esc(t.textContent.trim())}</a>`;
+      // The report is split into two parts; where one starts, the rail says so.
+      const head = t.previousElementSibling?.classList.contains("part-head")
+        ? t.previousElementSibling : null;
+      const part = head
+        ? `<p class="rail-head">${esc(head.querySelector(".part-num")?.textContent || "")} · ${esc(head.querySelector("h3")?.textContent || "")}</p>`
+        : "";
+      return `${part}<a href="#sec-${i + 1}"><span class="rn">${num}</span>${esc(headingText(t))}</a>`;
     }).join("");
 
     // scrollspy: the last section whose heading has passed the sticky chrome

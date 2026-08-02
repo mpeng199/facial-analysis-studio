@@ -215,7 +215,14 @@ p { margin: 0; }
 /* ---------- steps ---------- */
 main { padding: clamp(28px, 5vw, 56px) clamp(16px, 4vw, 40px) 40px; }
 .step { display: none; }
-.step.on { display: block; animation: rise 0.5s ease both; }
+/* `backwards`, not `both`. A finished fill-both animation keeps applying its
+   `to` keyframe, so `transform: none` computes to an identity matrix that never
+   goes away — and any transform, identity or not, makes this section the
+   containing block for `position: fixed` descendants. That silently reparented
+   the mobile tooltip sheet to an 8000px-tall section and pushed it off screen.
+   `backwards` only fills before the animation starts, so the entrance is
+   identical and the transform is gone the moment it ends. */
+.step.on { display: block; animation: rise 0.5s ease backwards; }
 @keyframes rise {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: none; }
@@ -638,14 +645,17 @@ select:focus, input:focus {
   max-height: calc(100vh - 140px);
   overflow-y: auto;
 }
+/* One per part of the report, so the rail carries the same split the page does. */
 .rail-head {
+  margin: 0;
   font-size: 0.68rem;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--gold);
   padding: 0 0 10px 12px;
 }
+.report-rail a + .rail-head { margin-top: 20px; }
 .report-rail a {
   display: flex;
   align-items: baseline;
@@ -726,6 +736,8 @@ select:focus, input:focus {
   height: 1px;
   background: linear-gradient(90deg, rgba(176, 144, 47, 0.5), transparent);
 }
+/* baseline-aligning a round badge against a 1.6rem serif drops it visibly low */
+.section-title .qm { align-self: center; margin-right: 4px; }
 
 .dashboard {
   display: grid;
@@ -765,28 +777,42 @@ select:focus, input:focus {
   box-shadow: var(--shadow);
   padding: 18px 20px;
 }
+/* Card titles carry the report: they are what you scan for. Italiana is a
+   hairline didone — magnificent at 3rem, and at 1.2rem it dissolves into the
+   pearl ground. So the display face stays on the display-scale headings and
+   these drop to the body face at 700, which is the only real weight either
+   family has. Same palette, same room, twice the presence. */
 .card h4 {
-  font-family: var(--display);
-  font-size: 1.22rem;
-  letter-spacing: 0.02em;
-  text-transform: capitalize;
+  font-family: var(--body);
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: -0.004em;
+  color: var(--ink);
   margin-bottom: 10px;
   display: flex;
   align-items: center;
   gap: 9px;
 }
+/* a line of orientation under a card title, before the list starts */
+.card-lede { margin-bottom: 12px; }
+/* The value is nowrap and can be long ("0.59× eye-width above the lid · 100"),
+   so in a narrow card it used to starve the label down to one word per line.
+   Wrapping lets the value drop to its own right-aligned line instead — the
+   label keeps at least half the row either way. */
 .metric {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 12px;
+  align-items: baseline;
+  gap: 2px 12px;
   padding: 8px 0;
   border-top: 1px solid var(--line-soft);
   font-size: 0.87rem;
   font-variant-numeric: tabular-nums;
 }
 .metric:first-of-type { border-top: none; }
-.metric .mlabel { color: var(--muted); }
-.metric .mval { font-weight: 600; white-space: nowrap; }
+.metric .mlabel { flex: 1 1 55%; color: var(--muted); }
+.metric .mval { flex: 0 0 auto; margin-left: auto; font-weight: 600; white-space: nowrap; }
 .bar {
   height: 5px;
   border-radius: 999px;
@@ -808,6 +834,253 @@ select:focus, input:focus {
 .pill.good { background: rgba(47, 125, 93, 0.14); color: var(--good); }
 .pill.warn { background: rgba(176, 125, 43, 0.16); color: var(--warn); }
 .pill.bad { background: rgba(166, 61, 78, 0.14); color: var(--bad); }
+
+/* ---------- the `?` and its tooltip ---------- */
+/* Every term the report measures carries one. A real <button> so it's tabbable
+   and so a tap on a touch screen focuses it — the bubble opens on :focus, not
+   only :focus-visible, which is what makes it work without a mouse.
+   render.js also puts the definition in aria-label: ::after content is not
+   reliably announced. */
+.qm {
+  position: relative;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--marble-sunk);
+  color: var(--muted);
+  font: 700 0.63rem/1 var(--body);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: help;
+  vertical-align: 0.08em;
+  transition: border-color 0.18s, color 0.18s, background 0.18s;
+}
+.qm:hover,
+.qm:focus {
+  border-color: var(--iris);
+  color: var(--iris-ink);
+  background: rgba(109, 90, 230, 0.12);
+}
+.qm::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  translate: -50%;
+  z-index: 60;
+  width: max-content;
+  max-width: 264px;
+  padding: 11px 14px;
+  border-radius: 11px;
+  background: var(--ink);
+  color: #f5f4fb;
+  font: 400 0.8rem/1.55 var(--body);
+  letter-spacing: 0;
+  text-transform: none;
+  text-align: left;
+  box-shadow: 0 12px 32px rgba(27, 26, 36, 0.3);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.16s, visibility 0.16s;
+  pointer-events: none;
+}
+.qm::before { /* the little nib under the bubble */
+  content: "";
+  position: absolute;
+  bottom: calc(100% + 5px);
+  left: 50%;
+  translate: -50%;
+  z-index: 61;
+  width: 10px;
+  height: 10px;
+  background: var(--ink);
+  clip-path: polygon(50% 100%, 0 0, 100% 0);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.16s, visibility 0.16s;
+  pointer-events: none;
+}
+.qm:hover::after, .qm:focus::after,
+.qm:hover::before, .qm:focus::before { opacity: 1; visibility: visible; }
+
+/* Below 940px the report goes full-bleed and the columns get narrow enough that
+   a 264px bubble centred on a `?` near either edge would run off screen. There
+   is no pure-CSS way to clamp an absolutely-positioned box to the viewport, so
+   below that width the bubble becomes a bottom sheet instead — pinned to the
+   window, so it cannot clip no matter which `?` opened it. */
+@media (max-width: 940px) {
+  .qm::after {
+    position: fixed;
+    inset: auto 14px 14px;
+    width: auto;
+    max-width: none;
+    translate: none;
+    font-size: 0.86rem;
+    box-shadow: 0 -6px 34px rgba(27, 26, 36, 0.26);
+  }
+  .qm::before { display: none; }
+}
+
+/* ---------- the two parts ---------- */
+.part-head {
+  margin: 56px 0 6px;
+  padding: 26px 0 22px;
+  border-top: 1px solid var(--line);
+  text-align: center;
+}
+.part-head:first-of-type { margin-top: 34px; }
+.part-num {
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-bottom: 8px;
+}
+.part-head h3 {
+  font-family: var(--display);
+  font-size: clamp(1.9rem, 4vw, 2.5rem);
+  letter-spacing: 0.02em;
+}
+.part-head p {
+  margin: 10px auto 0;
+  max-width: 56ch;
+  font-size: 0.92rem;
+  color: var(--muted);
+}
+
+/* ---------- part one: the plain-English read ---------- */
+.glance {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+  background: var(--marble);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 26px 28px;
+}
+@media (max-width: 700px) { .glance { grid-template-columns: 1fr; gap: 18px; } }
+.glance-score { text-align: center; }
+/* The one number the whole report reduces to — it should be the loudest thing
+   on the page, which a hairline didone cannot be at any size. */
+.gs-num {
+  display: block;
+  font-size: 4.2rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.gs-den {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.gs-band { margin-top: 12px; font-size: 0.78rem; }
+.glance-say p { font-size: 0.97rem; line-height: 1.68; }
+.glance-say p + p { margin-top: 12px; }
+
+.quickstats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+.qs {
+  background: var(--marble);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 15px 17px;
+}
+.qs-lab {
+  display: flex;
+  align-items: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+.qs-val {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 1.85rem;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+.qs-band { margin-left: 8px; font-size: 0.82rem; color: var(--muted); }
+.qs .bar { margin-top: 9px; }
+
+.plain-list { list-style: none; padding: 0; margin: 0; }
+.plain-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 0.92rem;
+}
+.plain-list li:last-child { border-bottom: none; }
+.plain-list li:first-child { padding-top: 2px; }
+.plain-list .lead { font-weight: 700; }
+.plain-list .why { grid-column: 1 / -1; }
+
+.startlist {
+  list-style: none;
+  counter-reset: start;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 12px;
+}
+.startlist li {
+  counter-increment: start;
+  position: relative;
+  background: var(--marble);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 16px 20px 16px 58px;
+}
+.startlist li::before {
+  content: counter(start);
+  position: absolute;
+  left: 18px;
+  top: 16px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--gold);
+  background: rgba(176, 144, 47, 0.1);
+  font-family: var(--display);
+  font-size: 0.92rem;
+  color: var(--ink);
+}
+.start-what {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 1rem;
+}
+.start-how { margin-top: 7px; font-size: 0.89rem; color: var(--muted); line-height: 1.55; }
+.start-note { margin-top: 12px; }
 
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 760px) { .split { grid-template-columns: 1fr; } }
@@ -883,7 +1156,7 @@ select:focus, input:focus {
   gap: 10px;
   flex-wrap: wrap;
 }
-.proto-what { font-family: var(--display); font-size: 1.2rem; letter-spacing: 0.02em; }
+.proto-what { font-weight: 700; font-size: 1.04rem; letter-spacing: -0.004em; }
 .proto-meta { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
 .tag {
   font-size: 0.68rem;
