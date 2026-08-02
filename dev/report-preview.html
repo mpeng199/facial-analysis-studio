@@ -40,10 +40,18 @@
   </main>
 
   <script type="module">
-    import * as G from "../geometry3d.js";
-    import { IDX } from "../landmarks.js";
-    import { analyze } from "../analysis.js";
-    import { buildReportHTML } from "../render.js";
+    // Dynamic imports with a cache-buster, not static ones. A `?cb=` on this
+    // page's URL does not reach its module graph, so the browser pane happily
+    // kept serving a stale analysis.js while the file on disk had changed —
+    // which makes every visual check a lie. Editing a module is the whole
+    // point of this harness, so it always fetches fresh.
+    const v = "?cb=" + Date.now();
+    const [G, { IDX }, { analyze }, { buildReportHTML }] = await Promise.all([
+      import("../geometry3d.js" + v),
+      import("../landmarks.js" + v),
+      import("../analysis.js" + v),
+      import("../render.js" + v),
+    ]);
 
     // ---- synthetic head (test.html's, nudged off-centre so scores vary) ----
     const F = Array.from({ length: 478 }, () => ({ x: 0, y: 0, z: 0 }));
