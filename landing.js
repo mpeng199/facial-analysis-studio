@@ -272,7 +272,7 @@ async function init(THREE) {
   // Mirror bays sit at each tenet chapter's zone centre, snapped to the
   // colonnade grid inside buildHall so flanking columns frame them exactly.
   const bayZones = chapters.slice(1, 5).map((c) => (c.a + c.b) / 2);
-  const { panes, endPane, nicheKeys, nicheZs, flame, haloMat } = buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorBase, envTex, statuePromise, loadStatue, restageShadows });
+  const { panes, endPane, nicheKeys, nicheZs, flame, haloMat, torchLights, torchAt } = buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorBase, envTex, statuePromise, loadStatue, restageShadows });
 
   // The open sky above the colonnade: sunset dome, low sun, drifting clouds.
   const sky = makeSky(THREE);
@@ -445,6 +445,30 @@ async function init(THREE) {
         key.target.position.z = nz + 0.35;
         key.target.updateMatrixWorld();
       }
+      // Torch fire, same trick as the keys: the two lights ride to the nearest
+      // sconce on each side. Intensity falls off with distance so a torch fades
+      // up as you approach rather than snapping on when the nearest one changes
+      // — the hand-off happens at the midpoint between two sconces, which is
+      // exactly where both are dimmest and nobody can see it happen.
+      for (let s = 0; s < 2; s++) {
+        const wantSide = s ? 1 : -1;
+        let best = null, bestD = Infinity;
+        // NOT `t` — that is the frame clock two scopes up, and shadowing it
+        // here made the flicker below multiply an array, so every torch burned
+        // at NaN and three.js quietly rendered nothing.
+        for (const pos of torchAt) {
+          if (Math.sign(pos[0]) !== wantSide) continue;
+          const d = Math.abs(pos[2] - camZ);
+          if (d < bestD) { bestD = d; best = pos; }
+        }
+        const l = torchLights[s];
+        if (!best) { l.intensity = 0; continue; }
+        l.position.set(best[0], best[1], best[2]);
+        // flicker on the same beat the flame shader burns to, so the light on
+        // the wall and the fire making it are visibly the same event
+        const flick = 0.88 + 0.12 * Math.sin(t * 7.3 + best[2] * 1.7) * Math.sin(t * 11.9 + best[2]);
+        l.intensity = Math.max(0, 1 - bestD / 7) * 5.2 * flick;
+      }
       // mirror glint: panes brighten as you pass them
       for (const p of panes) {
         const d = Math.abs(p.userData.z - camZ);
@@ -492,6 +516,7 @@ async function init(THREE) {
     go: (p) => { progress = p; camZ = zAt(p); },
     addRipple: (x, z) => voidWorld.addRipple(x, z),
     scene, camera, renderer, post, voidGroup: voidWorld.group,
+    torchAt, torchLights, // dev/_audit.js checks the roaming sconce lights
   };
   console.info("3D corridor active.");
 }
@@ -594,8 +619,18 @@ async function buildPost(THREE, renderer, scene, camera) {
     // fixed overhead (the normal prepass, the denoise and the full-res blend),
     // not by the AO shader, so 8 and 16 measured identically — 20.7ms against
     // 20.4ms, inside the noise. Free quality is worth taking.
-    gtao.updateGtaoMaterial({ radius: 0.55, distanceExponent: 1, thickness: 1, scale: 1, samples: 16, screenSpaceRadius: false });
-    gtao.blendIntensity = 0.85; // present, not a charcoal drawing
+    // Radius down from 0.55 to 0.34. AO is doing two different jobs here and
+    // they want opposite radii: the slow darkening of a deep recess, and the
+    // hard CONTACT line where one stone meets another. A 0.55m radius resolves
+    // the first and washes out the second, because a 22mm arris and a bed
+    // mould's 55mm reveal are far inside it — the occlusion gets spread over
+    // half a metre and arrives as a general grey. At 0.34 every joint this pass
+    // added (pedestal on ledge, bed mould under cap, sill under niche, foot of
+    // a cast on its cap) reads as a distinct dark line, which is precisely what
+    // makes two solids look like they are touching rather than overlapping.
+    // The niches are 0.36 deep, so the recesses still fill.
+    gtao.updateGtaoMaterial({ radius: 0.34, distanceExponent: 1, thickness: 1, scale: 1, samples: 16, screenSpaceRadius: false });
+    gtao.blendIntensity = 1.0; // contact shadow has to actually land
     composer.addPass(gtao);
   }
 
@@ -847,23 +882,31 @@ function buildVoid(THREE, renderer, { archGeo, paneGeo, crystal, mirrorBase, VOI
   rim.position.set(6.5, 6, VOID_Z - 8);
   rim.target.position.set(0, 3, VOID_Z + 1);
   group.add(rim, rim.target);
-  const pedCyl = (r, h, y) => {
-    const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, 64), statueMarble);
-    m.position.y = y + h / 2;
-    m.castShadow = m.receiveShadow = true;
-    centrepiece.add(m);
-  };
-  pedCyl(1.62, 0.16, 0);    // base disc
-  pedCyl(1.34, 0.34, 0.16); // drum
-  pedCyl(1.5, 0.14, 0.5);   // cap
-  const PED_TOP = 0.64;
-  // thin gilt band around the drum
+  // The pedestal: the hall's own moulding profile, turned. This replaced three
+  // stacked CylinderGeometry drums and a gilt torus floating beside them — four
+  // meshes with hard 90° rims, which is a stack of discs, not a pedestal. One
+  // lathe is fewer meshes AND a moulded silhouette, the rare case where the
+  // lazy change and the good change are the same change. Same PEDESTAL_PROFILE
+  // the six niche pedestals sweep, so the beyond is visibly the same building.
+  const PED_H = 1.02, PED_R = 1.16, PED_PROJ = 0.26;
+  const pedestal = new THREE.Mesh(
+    makeLathePedestalGeo(THREE, { radius: PED_R, height: PED_H, proj: PED_PROJ }),
+    statueMarble,
+  );
+  pedestal.castShadow = pedestal.receiveShadow = true;
+  centrepiece.add(pedestal);
+  const PED_TOP = PED_H;
+  // The gilt is now held IN the profile rather than hung beside it: the quirk
+  // between the dado and the cyma (r = 0.070 of the projection, y = 0.710 of
+  // the height) is a real fillet, and the band sits in it as a gilt astragal.
+  // A metal ring floating at a radius the stone never reaches is the detail
+  // that read as an accessory taped on.
   const band = new THREE.Mesh(
-    new THREE.TorusGeometry(1.36, 0.016, 8, 72),
+    new THREE.TorusGeometry(PED_R + 0.070 * PED_PROJ + 0.004, 0.016, 10, 96),
     new THREE.MeshPhysicalMaterial({ color: 0xded3bd, metalness: 1, roughness: 0.30, envMap: envTex, envMapIntensity: 1.0 })
   );
   band.rotation.x = Math.PI / 2;
-  band.position.y = 0.42;
+  band.position.y = 0.710 * PED_H;
   centrepiece.add(band);
   let reflection = null;
   statuePromise.then((statueScene) => {
@@ -874,8 +917,16 @@ function buildVoid(THREE, renderer, { archGeo, paneGeo, crystal, mirrorBase, VOI
       }
     });
     statueScene.scale.setScalar(4.9 / 1682); // the scan is life-size, in mm
-    statueScene.position.y = PED_TOP;
     statueScene.rotation.y = 0; // facing the visitor, as in the photograph
+    // Seat it by MEASURING, exactly as the niche casts are. This used to set
+    // y = PED_TOP outright, which is only correct if the scan's origin happens
+    // to sit at the soles of its feet — and a museum scan's origin is wherever
+    // the scanner's floor was. Same class of bug as the plinth it stands on:
+    // a placement asserted rather than derived.
+    statueScene.position.set(0, 0, 0);
+    statueScene.updateMatrixWorld(true);
+    const vb = new THREE.Box3().setFromObject(statueScene);
+    statueScene.position.set(-(vb.min.x + vb.max.x) / 2, PED_TOP - vb.min.y, -(vb.min.z + vb.max.z) / 2);
     centrepiece.add(statueScene);
     // mirror image under the translucent water sheet
     reflection = centrepiece.clone(true);
@@ -1515,6 +1566,12 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
   const annuletGeo = new THREE.TorusGeometry(0.262, 0.018, 10, 48);
   const bandGeo = new THREE.CylinderGeometry(1, 1, 1, 48); // unit drum, scaled per band
   const drapeGeo = makeDrapeGeo(THREE);                    // one navy hanging, baked to bay size
+  const valanceGeo = makeValanceGeo(THREE);                // its gathered head, under the pelmet
+  // Turned curtain rod: 2.22 long on its own axis, laid along z by the ±90°
+  // turn its `put` applies. 20 sides — it is gilt, and a facet on a metal
+  // highlight is the first place faceting ever shows.
+  const rodGeo = new THREE.CylinderGeometry(0.032, 0.032, 2.22, 20);
+  const corbelGeo = makeCorbelGeo(THREE);                  // S-scroll bracket under each torch
 
   // Carved rosette (plate · ring · gilt boss) — flush relief ornament for the
   // metopes and wall panels; replaces the old free-floating rings.
@@ -1553,11 +1610,13 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
                             // into the plane the drapery hangs in
   const haloAt = [];        // flame centres, for the one shared glow sprite pass
   const torch = (side, zs) => {
-    // Console: a block keyed into the wall and the shelf it carries. In the
-    // hall's own stone, not the deep grey the old corbel used — these sit at
-    // eye level on a white wall and a dark bracket reads as a hole in it.
-    cube(marble, side * 5.255, 2.83, zs, 0.15, 0.13, 0.15); // stepped foot — the console's scroll
-    cube(marble, side * 5.26, 3.02, zs, 0.14, 0.30, 0.22);  // body, keyed into the wall
+    // Console. Three stacked cubes, one of which the comment called "the
+    // console's scroll" — but a scroll is a volute, and a box is not one. It sat
+    // at eye level on a white wall carrying a finely turned bronze torch, and
+    // the mismatch between the two was most of why the sconces read as pasted
+    // on. This is the real thing: an S-curve bracket, its volute spiralling
+    // under the shelf it carries.
+    put(corbelGeo, marble, side * 5.30, 2.78, zs, 1, side < 0 ? 0 : Math.PI);
     cube(marble, side * 5.20, 3.20, zs, 0.26, 0.07, 0.28);  // shelf
     const bx = side * 5.18, by = 3.21;
     // Tilt is about z, so it leans in the wall's own plane — toward the
@@ -1628,6 +1687,11 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
     wall.position.set(side * (WALL_X + 0.3), ENT_TOP / 2 - 0.03, -27); // z 4.5 → −58.5
     wall.castShadow = wall.receiveShadow = true;
     corridor.add(wall);
+    // (No skirting course here: the running podium already occupies x 4.04–5.60
+    // from the floor to 1.10 along both walls, so anything laid against the wall
+    // face at floor level is buried inside it. The wall/floor junction is really
+    // a podium/floor junction, and the kerbstone and border course below already
+    // do that job.)
     const refl = wall.clone(); // mirror twin under the translucent floor
     refl.scale.y = -1;
     // keep its top 9cm UNDER the floor (matching the batcher twins' drop):
@@ -1691,8 +1755,14 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
       const capCz = (zA + capB) / 2, capLen = zA - capB;
       const cz = (zA + zB) / 2, len = zA - zB;
       if (len < 0.06) return;
-      cube(marble, side * 4.95, 1.05, capCz, 1.30, 0.10, capLen); // podium cap 1.00–1.10
-      cube(iris, side * 4.31, 1.115, capCz, 0.03, 0.05, capLen);  // stringcourse — the floor runner carried up
+      // A cap laid straight onto the rusticated courses is a butt joint, and it
+      // ran the entire length of the hall — the longest single wrong line in
+      // the building. A bed mould under the corona gives the eye the two-step
+      // transition real stonework has, and being a continuous horizontal it
+      // catches the raking light down the whole colonnade.
+      cube(marble, side * 4.99, 0.975, capCz, 1.18, 0.055, capLen); // bed mould, set back under the corona
+      cube(marble, side * 4.95, 1.05, capCz, 1.30, 0.10, capLen);   // podium cap 1.00–1.10
+      cube(iris, side * 4.31, 1.115, capCz, 0.03, 0.05, capLen);    // stringcourse — the floor runner carried up
       // Border course at the podium foot. It used to end at x 4.04 — exactly
       // the kerbstone's inner face — and float 3mm over the floor, so three
       // surfaces fought inside 13mm and strobed grey/tan along the colonnade.
@@ -1827,9 +1897,44 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
       Q.setFromEuler(EULER.set(0, -side * Math.PI / 2, 0)); // local width→z, fold→toward centre
       batch.place(drapeGeo, navy, new THREE.Matrix4().compose(V.set(side * DRAPE_X, 1.12, z), Q, S.set(1, 1, 1)));
       cube(navy, side * DRAPE_X, DRAPE_TOP + 0.06, z, 0.34, 0.20, 2.15); // pelmet, wide enough to cover the deeper gather
-      cube(gold, side * (DRAPE_X + 0.07), DRAPE_TOP - 0.03, z, 0.06, 0.06, 2.22); // gilt curtain rod
+      // A TURNED rod. This was a cube — a square curtain rod, which is a thing
+      // that does not exist, and at eye level in the intercolumniation. The
+      // lathe machinery is already here for the balusters and the torch, so a
+      // round one costs a unit cylinder and a rotation.
+      put(rodGeo, gold, side * (DRAPE_X + 0.07), DRAPE_TOP - 0.03, z, 1, Math.PI / 2);
+      // Valance: the gathered head of the cloth, hung BELOW the pelmet so the
+      // curtain no longer butts straight into a box. This is the junction the
+      // eye reads as "hung" rather than "placed" — a curtain meeting its pelmet
+      // on a flat line is the tell that neither is real.
+      batch.place(valanceGeo, navy, new THREE.Matrix4().compose(
+        V.set(side * (DRAPE_X - 0.015), DRAPE_TOP - 0.10, z), Q, S.set(1, 1, 1)));
     }
   }
+
+  // =====================================================================
+  // The pedestal order, hoisted: the transverse piers below carry the figure
+  // niches, and a pier's projecting footing has to be sized to the pedestal it
+  // will eventually hold. Those pedestals are only cut when their casts finish
+  // loading, so the DIMENSIONS have to be agreed up here or the two disagree —
+  // which is the whole family of bug this pass exists to kill.
+  // =====================================================================
+  // FOOT_MARGIN is the stone that must show around a cast's own base on every
+  // side: the visual difference between a figure STANDING ON a pedestal and one
+  // merely intersecting it. PED_MAX_* cap the plan so a pedestal can never grow
+  // wider than the niche it stands in or longer than the ledge it stands on.
+  // 0.40 is not arbitrary — the deepest scan base in the set (the Doryphoros,
+  // 0.739 front to back) plus its margins is what sets it.
+  const PED_H = 0.58, PED_PROJ = 0.075, FOOT_MARGIN = 0.085;
+  const PED_MAX_HX = 0.80, PED_MAX_HZ = 0.40;
+  // The cap's top bed is the profile's outermost point measured from the dado.
+  // Derived from PEDESTAL_PROFILE rather than typed, so re-cutting the moulding
+  // cannot silently un-seat six figures.
+  const PED_CAP_OUT = Math.max(...PEDESTAL_PROFILE.map(([r]) => r)) * PED_PROJ;
+  // How far the widest course reaches forward of the niche's back plane, and so
+  // how deep the pier's footing has to be to carry it without cantilevering.
+  const PED_MAX_DEPTH = 2 * (PED_MAX_HZ - PED_CAP_OUT + PED_PROJ);
+  const NICHE_BACK = 0.25 + ARRIS + 0.05;          // niche backing, off the pier face
+  const LEDGE_FRONT = NICHE_BACK + 0.03 + PED_MAX_DEPTH + 0.05;
 
   // =====================================================================
   // 3. Transverse arches — full rings of the order spanning the corridor,
@@ -1856,8 +1961,18 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
       // the niche and the ledge its statue stands on both cantilevered past
       // it; that stack of mismatched projections is what read as overlapping
       // blocks. Every bench course now dies into this single mass instead.
-      cube(travPlain, side * 4.11, 0.485, z + 0.19, 2.98, 1.07, 1.06); // x 2.62–5.60, y −0.05–1.02
-      cube(marble, side * 4.11, 1.055, z + 0.19, 3.10, 0.13, 1.18);    // its cap, x 2.56–5.66, y 0.99–1.12
+      // Depth DERIVED from LEDGE_FRONT, not typed. A pedestal cut to a real
+      // cast's base slab is ~0.82 deep where the old box was 0.34, and a
+      // pedestal whose plinth oversails the ledge it stands on is the same lie
+      // as a statue oversailing its plinth — one course further down, harder to
+      // spot and no less wrong. The footing grows to carry what it carries.
+      const ledgeC = z + (LEDGE_FRONT - 0.40) / 2, ledgeD = LEDGE_FRONT + 0.40;
+      cube(travPlain, side * 4.11, 0.485, ledgeC, 2.98, 1.07, ledgeD - 0.12); // y −0.05–1.02
+      // Bed mould, matching the podium's: this ledge is the biggest projecting
+      // mass at eye level in the hall, and a bare slab landing on a bare block
+      // is the joint that made the whole assembly read as stacked boxes.
+      cube(marble, side * 4.11, 0.965, ledgeC, 3.02, 0.06, ledgeD - 0.08);
+      cube(marble, side * 4.11, 1.055, ledgeC, 3.10, 0.13, ledgeD);           // its cap, y 0.99–1.12
       cube(marble, side * 4.25, 3.38, z, 3.3, 0.18, 0.62);  // impost moulding
     }
   }
@@ -1867,23 +1982,60 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
   //     shallow arched niche holding a Greek cast. Six different figures, one
   //     per niche (FIGURES below); they arrive async, each from its own GLB.
   // =====================================================================
-  // The transverse pier's front face (extrude 0.5 from colZ−0.25, + 0.03 bevel)
-  // lands at colZ + 0.28. NOTHING in the niche may share that plane: coplanar
-  // faces z-fight, which is what made the backing flicker between blue and
-  // stone as the camera moved. Every part is seated off PIER_FACE with
-  // clearance, and the backing's rear is buried inside the pier so no gap shows.
-  const PIER_FACE = 0.28;
+  // NOTHING in the niche may share the pier's front plane: coplanar faces
+  // z-fight, which is what made the backing flicker between blue and stone as
+  // the camera moved. Every part is seated off PIER_FACE with clearance, and
+  // the backing's rear is buried inside the pier so no gap shows.
+  //
+  // The pier's arch wall extrudes 0.5 from colZ−0.25, and ExtrudeGeometry's
+  // bevel inflates that outward by one ARRIS — so the face lands at
+  // colZ + 0.25 + ARRIS. This used to be the literal 0.28, correct only while
+  // the bevel happened to be 30mm; DERIVING it means changing the hall's edge
+  // rule can never again silently unseat every niche in the building.
+  const PIER_FACE = 0.25 + ARRIS;
   const BACK_CLEAR = 0.05;    // backing front, proud of the pier
-  const REVEAL = 0.34;        // how deep the recess reads
-  const nicheGeo = makeArchWallGeo(THREE, 1.15, 2.50, 0.78, 1.55, REVEAL);
+  const REVEAL = 0.36;        // how deep the recess reads
+  // The niche was 1.56 wide and 2.33 to its crown, holding a figure fitted to
+  // 1.45 × 1.9 standing 0.44 up — so a cast cleared each jamb by 28mm and its
+  // head arrived exactly AT the crown. That is the second half of why these
+  // read wrong: not merely a bad plinth, a figure bursting out of its frame.
+  //
+  // Opening 1.84, crown 2.68. The surround grows to 2.64 wide, which the
+  // transverse pier (x 2.56–5.66, so 3.10 of stone) carries with 0.23 to spare
+  // on each side — measured against the pier cap, not guessed. Centred on 4.11
+  // rather than the old 4.15 so those two margins are equal; a niche sitting
+  // 4cm off its own pier's centreline is the kind of thing you cannot name but
+  // can always see.
+  const NICHE_X = 4.11, NICHE_OPEN = 0.92, NICHE_SPRING = 1.76, NICHE_H = 3.02;
+  const NICHE_CROWN = NICHE_SPRING + NICHE_OPEN;   // 2.68 above the sill
+  const nicheGeo = makeArchWallGeo(THREE, NICHE_OPEN + 0.40, NICHE_H, NICHE_OPEN, NICHE_SPRING, REVEAL);
   const statueSpots = [];
   const niche = (x, sillY, pierZ) => {
     const baseY = sillY - 0.05;           // lap down into the podium cap, never share its top plane
     const back = pierZ + BACK_CLEAR;      // plane of the backing's front face
-    cube(nicheBack, x, baseY + 1.26, back - 0.03, 1.5, 2.44, 0.06); // backing (rear buried in the pier)
+    const face = back + REVEAL + ARRIS;   // the surround's own front, bevel included
+    cube(nicheBack, x, baseY + 1.40, back - 0.03, 1.90, 2.72, 0.06); // backing (rear buried in the pier)
     put(nicheGeo, marble, x, baseY, back);                           // surround: a REVEAL-deep recess
-    cube(travPlain, x, baseY + 0.17, back + 0.17, 0.86, 0.44, 0.34); // plinth 1.00–1.44, foot keyed into the pier cap
-    statueSpots.push({ x, y: baseY + 0.39, z: back + 0.02 });
+    // (No separate sill course. One was tried and deleted: the niche's base sits
+    // at PODIUM_TOP−0.05 so it laps INTO the pier's ledge cap rather than
+    // landing on its top plane, which means any sill under it is inside the cap
+    // — 0.96–1.03 against a cap running 0.99–1.12 — and draws nothing. The
+    // ledge cap, which projects LEDGE_FRONT past the pier, already is the sill.)
+    // An archivolt round the head and a cornice over it. Without these the
+    // surround is a slab with a hole punched in it — which is exactly what it
+    // looked like. With them it is a tabernacle: a framed thing that belongs to
+    // the pier. The archivolt is the same unit half-ring the mirror aediculae
+    // turn, scaled to this arch, so the two niches in the hall are relatives.
+    put(archivoltGeo, marble, x, baseY + NICHE_SPRING, face - 0.02, NICHE_OPEN + 0.07);
+    // Crowning cornice. Its rear face is held just FORWARD of the niche's own
+    // back plane, not centred on it: a column stands on this same pier axis at
+    // x ±4.75 with a shaft occupying colZ ± 0.30, and the first cut of this
+    // cornice reached back to colZ + 0.19 — straight through the shaft, at
+    // y 4.16–4.28. The member-clash audit caught it. Every course here starts at
+    // `back` and grows FORWARD, which is the only direction with nothing in it.
+    cube(marble, x, baseY + NICHE_H + 0.045, back + 0.34, 2.72, 0.09, REVEAL + 0.28); // bed mould
+    cube(marble, x, baseY + NICHE_H + 0.15, back + 0.38, 2.86, 0.12, REVEAL + 0.36);  // corona + drip
+    statueSpots.push({ x, z: back + 0.03, baseY });
   };
   // Every OTHER arch carries a pair of figure niches, matched across the hall
   // (a colonnade is bilaterally symmetric). The amphorae are gone — a pot on a
@@ -1894,7 +2046,7 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
   // nicheAxes (every other arch) is computed up with frameAxes so the drapery
   // can avoid exactly these piers — the two must never disagree.
   for (const m of nicheAxes) {
-    for (const side of [-1, 1]) niche(side * 4.15, PODIUM_TOP, colZ(m) + PIER_FACE);
+    for (const side of [-1, 1]) niche(side * NICHE_X, PODIUM_TOP, colZ(m) + PIER_FACE);
   }
   // (No facade niches: at x ±4.0 they intersected the portico columns, and the
   // temple front already carries its pediment, medallion and acroteria.)
@@ -1918,22 +2070,40 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
   const box = new THREE.Box3(), size = new THREE.Vector3(), vtx = new THREE.Vector3();
   // A flung-out pose drags its bounding-box centre with it — centring the
   // Discobolus that way hangs his base slab off the side of the plinth.
-  // Centre on the footprint (the lowest tenth of the figure) instead.
-  const footCentreX = (obj, bounds) => {
+  // Measure the FOOTPRINT (the lowest tenth of the figure) instead.
+  //
+  // This used to return an x centre only, and that omission is the bug in the
+  // screenshot that started all this: the pedestal was a fixed 0.86 × 0.34 box
+  // while the casts' own scan bases run to 1.2 wide and half a metre deep, so
+  // the stone under them was narrower than the thing standing on it and the
+  // figure hung over its own plinth on two sides. You cannot seat a figure on a
+  // pedestal you sized before you looked at the figure. Returning the whole
+  // footprint box lets the pedestal be CUT TO the cast, which is how a real
+  // museum mounts one.
+  const footprint = (obj, bounds) => {
     const cut = bounds.min.y + (bounds.max.y - bounds.min.y) * 0.1;
-    let lo = Infinity, hi = -Infinity;
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
     obj.traverse((o) => {
       if (!o.isMesh) return;
       const pos = o.geometry.attributes.position;
       for (let v = 0; v < pos.count; v++) {
         vtx.fromBufferAttribute(pos, v).applyMatrix4(o.matrixWorld);
         if (vtx.y > cut) continue;
-        if (vtx.x < lo) lo = vtx.x;
-        if (vtx.x > hi) hi = vtx.x;
+        if (vtx.x < x0) x0 = vtx.x;
+        if (vtx.x > x1) x1 = vtx.x;
+        if (vtx.z < z0) z0 = vtx.z;
+        if (vtx.z > z1) z1 = vtx.z;
       }
     });
-    return lo > hi ? (bounds.min.x + bounds.max.x) / 2 : (lo + hi) / 2;
+    // A scan with no vertices in its lowest tenth is malformed, not a reason to
+    // place blind: fall back to the full bounds rather than emit NaN, which
+    // would poison the pedestal's size and silently drop it from the scene.
+    if (x0 > x1) return { cx: (bounds.min.x + bounds.max.x) / 2, cz: (bounds.min.z + bounds.max.z) / 2,
+                          hx: (bounds.max.x - bounds.min.x) / 2, hz: (bounds.max.z - bounds.min.z) / 2 };
+    return { cx: (x0 + x1) / 2, cz: (z0 + z1) / 2, hx: (x1 - x0) / 2, hz: (z1 - z0) / 2 };
   };
+  // (PED_H, PED_PROJ, FOOT_MARGIN, PED_MAX_* and PED_CAP_OUT are declared with
+  // the transverse piers above — the pier footing is sized from them.)
   statueSpots.forEach((spot, i) => {
     const fig = FIGURES[i % FIGURES.length];
     // The Discobolus is already in flight for the beyond; reuse that load.
@@ -1955,14 +2125,43 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
       box.setFromObject(st).getSize(size);
       st.scale.setScalar(Math.min(1.45 / size.x, 1.9 / size.y));
       st.updateMatrixWorld(true);
-      // Seat by the rotated box: feet on the plinth, back edge clear of the
+      // Seat by the rotated box: feet on the pedestal, back edge clear of the
       // backing. Placing by a guessed offset is what buried the trailing leg
       // and discus arm inside the pier.
       box.setFromObject(st);
+      const fp = footprint(st, box);
+
+      // ---- cut the pedestal TO this cast, then stand the cast on it ----
+      // Clamped, not merely computed: the plinth is the widest course and has
+      // to stay inside both the niche opening and the ledge it stands on.
+      const capHX = Math.min(fp.hx + FOOT_MARGIN, PED_MAX_HX);
+      const capHZ = Math.min(fp.hz + FOOT_MARGIN, PED_MAX_HZ);
+      const ped = new THREE.Mesh(makeSweptMouldingGeo(THREE, PEDESTAL_PROFILE, {
+        halfX: capHX - PED_CAP_OUT, halfZ: capHZ - PED_CAP_OUT,
+        height: PED_H, proj: PED_PROJ, cornerR: 0.05,
+      }), travPlain);
+      // Named so __audit.seating() can pair each cast with the stone under it.
+      // Identifying them by vertex count does not work: `crease` rebuilds the
+      // geometry non-indexed, so the count it leaves is not the one authored.
+      ped.name = `pedestal:${fig.file}`;
+      st.name = `figure:${fig.file}`;
+      // The plinth's back edge sits just clear of the niche backing.
+      const pedZ = spot.z + capHZ - PED_CAP_OUT + PED_PROJ;
+      ped.position.set(spot.x, spot.baseY, pedZ);
+      ped.castShadow = ped.receiveShadow = true;
+      corridor.add(ped);
+
+      // Seated centred in x — both flanks are in view, so a bias there would
+      // simply be a visible error on one side. In z it is seated FORWARD
+      // instead: the front margin is held at exactly FOOT_MARGIN and any
+      // shortfall is pushed to the back, where the niche's own backing hides
+      // it. Only the Doryphoros needs this (its scan base is 0.739 deep, the
+      // one that overruns PED_MAX_HZ), and it is the difference between a
+      // base slab jutting into the corridor and one tucked into the wall.
       st.position.set(
-        spot.x - footCentreX(st, box),
-        spot.y - box.min.y,
-        spot.z - box.min.z,
+        spot.x - fp.cx,
+        spot.baseY + PED_H - box.min.y,
+        pedZ + capHZ - FOOT_MARGIN - fp.hz - fp.cz,
       );
       corridor.add(st);
       restageShadows(); // the shadow map is on demand now; this cast is new to it
@@ -1980,11 +2179,35 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
   // second shadow pass.
   const nicheKeys = [-1, 1].map((side) => {
     const key = new THREE.SpotLight(0xfdfaff, 30, 9, 0.62, 0.75, 2);
-    key.target.position.set(side * 4.15, 1.9, 0);
+    // Aimed at the middle of the FIGURE, which now starts a pedestal higher
+    // (sill 1.05 + PED_H) and runs to about 3.5 — so the old 1.9 was raking
+    // the pedestal's dado and leaving the torso to the ambient wash.
+    key.target.position.set(side * NICHE_X, 2.55, 0);
     corridor.add(key, key.target);
     return key;
   });
   const nicheZs = [...new Set(statueSpots.map((s) => s.z))];
+
+  // Torch fire that actually lights something. The old note here reasoned that
+  // "sixteen real point lights would cost more than everything else in the hall
+  // put together, and the sconces never lit anything anyway" — the first half
+  // true, the second half the bug: a flame that leaves the wall behind it
+  // exactly as bright as the wall everywhere else is a sticker of a flame, and
+  // that is precisely what made the sconces read as pasted on.
+  //
+  // The premise was a false choice. This hall already solved it once, for the
+  // niche keys directly above: TWO lights that ride to whichever pair is
+  // nearest the visitor cost two lights and read as sixteen, because you can
+  // only ever be near one pair. Same trick, same tick, no new machinery.
+  const torchLights = [-1, 1].map((side) => {
+    const l = new THREE.PointLight(0xf3ecff, 0, 7.5, 2);
+    corridor.add(l);
+    return l;
+  });
+  // Filled AFTER the sconces are placed — see below. haloAt does not exist yet
+  // at this point in the build; reading it here silently produced two lights
+  // that sat at the origin at zero intensity forever.
+  const torchAt = [];
 
   // =====================================================================
   // 4. Mirror aediculae — arched niches IN the wall between two columns:
@@ -2105,11 +2328,14 @@ function buildHall(THREE, renderer, corridor, { zAt, bayZones, MIRROR_Z, mirrorB
     blending: THREE.AdditiveBlending, sizeAttenuation: true,
   });
   const haloGeo = new THREE.BufferGeometry();
+  // Every sconce is placed by now, so the roaming torch lights can finally be
+  // told where the fires are.
+  for (let i = 0; i < haloAt.length; i += 3) torchAt.push([haloAt[i], haloAt[i + 1], haloAt[i + 2]]);
   haloGeo.setAttribute("position", new THREE.Float32BufferAttribute(haloAt, 3));
   corridor.add(new THREE.Points(haloGeo, haloMat));
 
   batch.commit();
-  return { panes, endPane, nicheKeys, nicheZs, flame, haloMat };
+  return { panes, endPane, nicheKeys, nicheZs, flame, haloMat, torchLights, torchAt };
 
   // ---- local builders (they share the batcher, materials and datums) ----
 
@@ -2295,7 +2521,16 @@ function makeBatcher(THREE, parent) {
 // the bevels then overrun the corners and the surface stops being closed.)
 // Every vertex therefore sits at a cube corner and slides in along exactly TWO
 // axes — the two it is NOT a face of.
-const CHAMFER = 0.012; // 12mm arris, in world units
+// The hall's one edge rule. 12mm was geometrically present and visually
+// absent: at the distances you actually see this masonry from, a 12mm arris
+// subtends well under a pixel, so it never caught a specular line and every
+// block read as a mathematically sharp solid — which is precisely the "these
+// are primitives" tell. 22mm is the width at which an edge starts to hold a
+// highlight, and it is still a plausible mason's arris rather than a rounded-
+// over prop. ARRIS is the same number for the extruded members (see below), so
+// there is exactly one place to change the hall's hardness.
+const ARRIS = 0.022;
+const CHAMFER = ARRIS; // the chamfer box's own name for it, in world units
 function makeChamferBoxGeo(THREE) {
   const pos = [], nor = [], ins = [], idx = [];
   const push = (p, n, i) => { pos.push(...p); nor.push(...n); ins.push(...i); return pos.length / 3 - 1; };
@@ -2503,6 +2738,18 @@ function makeCloudTexture(THREE) {
 // world axis toward the corridor after the ±90° turn). Folds deepen toward the
 // floor and the sheet bellies out at mid-height, so it reads as heavy cloth,
 // not a curved plane. Bottom edge scallops slightly where it pools.
+// A curtain with no edge. The hanging was a PlaneGeometry — a zero-thickness
+// sheet rendered DoubleSide — so seen anywhere near edge-on it collapsed to a
+// line, and where it pooled on the bench it had no hem to pile up, only a
+// surface to bend. Heavy velvet is a slab of cloth: it has a thickness you can
+// see at every selvedge, and that thickness is most of why real drapery reads
+// as fabric rather than as painted board.
+//
+// Rather than model a second surface and stitch it (a solid needs its back, its
+// hem and its two selvedges — four more surfaces to keep in agreement), the
+// sheet is swept: build the front face, then offset a copy backwards along its
+// own normals and bridge the boundary. One fold field, so front and back can
+// never disagree about where a fold is.
 function makeDrapeGeo(THREE) {
   const W = 2.05, H = 3.66, F = 6;
   // 48×18 gave 8 segments per pleat, which is enough to CARRY a fold but the
@@ -2535,11 +2782,138 @@ function makeDrapeGeo(THREE) {
     // sharper crests than troughs — cloth breaks over a fold, it does not
     // sit on a cosine
     const c = Math.cos(phase);
-    pos.setZ(i, amp * Math.sign(c) * Math.pow(Math.abs(c), 0.72) + bow);
+    // Cloth that reaches a surface stops falling and starts SPREADING — it
+    // cannot go down, so it goes outward, and the folds open as they land.
+    // Without this the hanging simply bent at the bottom, which is a board
+    // meeting a shelf, not fabric piling on one.
+    const pool = v < 0.11 ? Math.pow(1 - v / 0.11, 1.6) : 0;
+    pos.setZ(i, amp * Math.sign(c) * Math.pow(Math.abs(c), 0.72) + bow + pool * 0.085);
     let ny = y + H / 2;                         // shift so the bottom edge is at y=0
     if (v < 0.14) ny -= (0.14 - v) / 0.14 * 0.22 * (0.45 + 0.55 * Math.abs(c)); // pools on the bench
     pos.setY(i, ny);
   }
+  geo.computeVertexNormals();
+
+  // ---- give the cloth a thickness ----
+  // The front face is finished; sweep it into a solid. THICK is 24mm: heavy
+  // velvet, and thick enough that the selvedge holds a highlight at the arris
+  // rule the rest of the hall works to.
+  const THICK = 0.024;
+  const gp = geo.getAttribute("position"), gn = geo.getAttribute("normal");
+  const SEGX = 96, SEGY = 40, COLS = SEGX + 1, ROWS = SEGY + 1, FRONT = COLS * ROWS;
+  const P = [], NORM = [];
+  for (let i = 0; i < FRONT; i++) {
+    P.push(gp.getX(i), gp.getY(i), gp.getZ(i));
+    NORM.push(gn.getX(i), gn.getY(i), gn.getZ(i));
+  }
+  for (let i = 0; i < FRONT; i++) { // the back: the same field, pushed in along its own normal
+    P.push(gp.getX(i) - gn.getX(i) * THICK,
+           gp.getY(i) - gn.getY(i) * THICK,
+           gp.getZ(i) - gn.getZ(i) * THICK);
+    NORM.push(-gn.getX(i), -gn.getY(i), -gn.getZ(i));
+  }
+  const I = [];
+  const at = (c, r) => r * COLS + c;
+  for (let r = 0; r < SEGY; r++) {
+    for (let c = 0; c < SEGX; c++) {
+      const a = at(c, r), b = at(c + 1, r), d = at(c, r + 1), e = at(c + 1, r + 1);
+      I.push(a, d, b, b, d, e);                                            // front
+      I.push(FRONT + a, FRONT + b, FRONT + d, FRONT + b, FRONT + e, FRONT + d); // back, reversed
+    }
+  }
+  // Bridge the four boundaries — the hem at the bottom, the heading at the top,
+  // and a selvedge down each side. Without these the cloth is two sheets with a
+  // gap you can see straight through wherever a fold turns away from you.
+  const rim = (a, b) => I.push(a, b, FRONT + a, b, FRONT + b, FRONT + a);
+  for (let c = 0; c < SEGX; c++) { rim(at(c + 1, 0), at(c, 0)); rim(at(c, SEGY), at(c + 1, SEGY)); }
+  for (let r = 0; r < SEGY; r++) { rim(at(0, r), at(0, r + 1)); rim(at(SEGX, r + 1), at(SEGX, r)); }
+
+  const solid = new THREE.BufferGeometry();
+  solid.setAttribute("position", new THREE.Float32BufferAttribute(P, 3));
+  solid.setAttribute("normal", new THREE.Float32BufferAttribute(NORM, 3));
+  solid.setIndex(I);
+  // The rim strips were authored with a flat normal borrowed from the face they
+  // spring off, so they need real ones; the faces keep the fold field's.
+  solid.computeVertexNormals();
+  return solid;
+}
+
+// Console bracket: the S-curve that carries the torch shelf. Local space has
+// the wall at x=0 and the bracket projecting toward −x, springing from y=0 at
+// the wall and scrolling down to its volute; `put` mirrors it for the far wall.
+//
+// The profile is the classical console: a large volute under the shelf, a
+// hollow cavetto running down the front, and a small counter-volute at the
+// foot. Extruded, because a console is a plate of stone with a moulded EDGE —
+// the silhouette is the whole design, which is exactly what an extrusion is
+// good at, and exactly what three stacked boxes had none of.
+function makeCorbelGeo(THREE) {
+  const s = new THREE.Shape();
+  s.moveTo(0, 0.42);          // top, against the wall, under the shelf
+  s.lineTo(-0.30, 0.42);      // the shelf's full projection
+  // upper volute: curls down and back under itself
+  s.bezierCurveTo(-0.34, 0.34, -0.30, 0.26, -0.23, 0.25);
+  s.bezierCurveTo(-0.16, 0.24, -0.14, 0.30, -0.19, 0.32);
+  s.bezierCurveTo(-0.24, 0.33, -0.24, 0.27, -0.19, 0.28);
+  // the long hollow down the face — the cavetto that gives a console its spring
+  s.bezierCurveTo(-0.15, 0.24, -0.14, 0.14, -0.10, 0.06);
+  // foot volute, small, tucked against the wall
+  s.bezierCurveTo(-0.09, 0.02, -0.05, -0.02, -0.02, 0.00);
+  s.bezierCurveTo(0.00, 0.01, -0.01, 0.03, -0.03, 0.02);
+  s.lineTo(0, 0.02);
+  s.closePath();
+  return crease(new THREE.ExtrudeGeometry(s, {
+    depth: 0.19, bevelEnabled: true, bevelThickness: ARRIS, bevelSize: ARRIS,
+    bevelSegments: 2, curveSegments: 20,
+  }), 0.73);
+}
+
+// The valance: the gathered head of the hanging, a short swagged band that sits
+// under the pelmet and hides where the cloth meets its box. Same pleat field as
+// the curtain but pinched harder and scalloped along its bottom edge, so it
+// reads as the same cloth gathered rather than as a second, unrelated object.
+// Solid for the same reason the curtain is — you see its hem from below.
+function makeValanceGeo(THREE) {
+  const W = 2.15, H = 0.40, F = 7, THICK = 0.022;
+  const SEGX = 72, SEGY = 8, COLS = SEGX + 1, ROWS = SEGY + 1;
+  const face = [], nrm = [];
+  const pt = (c, r) => {
+    const u = c / SEGX, v = r / SEGY;              // v: 0 bottom → 1 at the pelmet
+    const phase = u * F * Math.PI * 2;
+    const k = Math.cos(phase);
+    // gathered tight at the head, opening downward — the opposite of the
+    // curtain, which is gathered at the top and falls open
+    const amp = 0.052 * (0.35 + 0.65 * (1 - v));
+    const z = amp * Math.sign(k) * Math.pow(Math.abs(k), 0.7);
+    // scalloped hem: the swag dips between each gather
+    const dip = (1 - v) * 0.055 * (1 - Math.abs(k));
+    return [(u - 0.5) * W, v * H - dip, z];
+  };
+  for (let r = 0; r <= SEGY; r++) for (let c = 0; c <= SEGX; c++) face.push(pt(c, r));
+  // per-vertex normal from the pleat field, so front and back stay opposed
+  for (let r = 0; r <= SEGY; r++) for (let c = 0; c <= SEGX; c++) {
+    const a = pt(Math.max(0, c - 1), r), b = pt(Math.min(SEGX, c + 1), r);
+    const t = [b[0] - a[0], 0, b[2] - a[2]], L = Math.hypot(t[0], t[2]) || 1;
+    nrm.push([t[2] / L, 0, -t[0] / L]);
+  }
+  const P = [], N = [], I = [], FRONT = COLS * ROWS;
+  for (const [x, y, z] of face) P.push(x, y, z);
+  for (const n of nrm) N.push(...n);
+  face.forEach(([x, y, z], i) => P.push(x - nrm[i][0] * THICK, y, z - nrm[i][2] * THICK));
+  for (const n of nrm) N.push(-n[0], 0, -n[2]);
+  const at = (c, r) => r * COLS + c;
+  for (let r = 0; r < SEGY; r++) for (let c = 0; c < SEGX; c++) {
+    const a = at(c, r), b = at(c + 1, r), d = at(c, r + 1), e = at(c + 1, r + 1);
+    I.push(a, d, b, b, d, e);
+    I.push(FRONT + a, FRONT + b, FRONT + d, FRONT + b, FRONT + e, FRONT + d);
+  }
+  const rim = (a, b) => I.push(a, b, FRONT + a, b, FRONT + b, FRONT + a);
+  for (let c = 0; c < SEGX; c++) { rim(at(c + 1, 0), at(c, 0)); rim(at(c, SEGY), at(c + 1, SEGY)); }
+  for (let r = 0; r < SEGY; r++) { rim(at(0, r), at(0, r + 1)); rim(at(SEGX, r + 1), at(SEGX, r)); }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(P, 3));
+  geo.setAttribute("normal", new THREE.Float32BufferAttribute(N, 3));
+  geo.setIndex(I);
   geo.computeVertexNormals();
   return geo;
 }
@@ -2618,6 +2992,112 @@ function makeBalusterGeo(THREE) {
   return crease(new THREE.LatheGeometry(pts, 28), 0.73);
 }
 
+// ---------- the pedestal order ----------
+//
+// ONE profile serves every pedestal in the building. The niches sweep it
+// around a rounded rectangle; the beyond turns it on a lathe. Same mouldings,
+// same family — which is the whole point: a hall reads as designed when its
+// parts are inflections of one vocabulary rather than a set of unrelated
+// solids. (This replaced a 0.86 × 0.44 × 0.34 box under each cast and three
+// stacked cylinders under the Discobolus. A box has two silhouette events, top
+// and bottom. This has twenty-three, and the raking key light finds every one.)
+//
+// Given bottom to top as [r, y], both NORMALISED: r as a fraction of the
+// pedestal's projection (1 = the plinth, the widest course), y as a fraction of
+// its total height. Normalising the two independently is load-bearing — the
+// beyond's pedestal is wide and low while a niche's is narrow and tall, and a
+// profile tied to height alone gives the wide one mouldings too small to see.
+//
+// The courses, in order: plinth, its wash, a cavetto gathering in to the dado,
+// the dado itself (the quiet field that makes the rest read), a quirk to start
+// the cap with a line of shadow, a cyma reversa opening back out, the corona,
+// and a fillet standing proud of it — that last step is the drip, the thing
+// that stops water tracking back under a real cornice, and the reason the cap
+// throws a hard shadow line instead of dissolving into the dado.
+const PEDESTAL_PROFILE = [
+  [1.000, 0.000], [1.000, 0.058],                                   // plinth face
+  [0.966, 0.072],                                                   // its wash
+  [0.915, 0.086], [0.790, 0.104], [0.600, 0.124], [0.400, 0.142],   // cavetto in
+  [0.232, 0.158], [0.116, 0.174], [0.048, 0.188], [0.000, 0.204],
+  [0.000, 0.688],                                                   // the dado
+  [0.070, 0.704], [0.070, 0.716],                                   // quirk
+  [0.190, 0.736], [0.375, 0.762], [0.560, 0.790],                   // cyma reversa out
+  [0.710, 0.820], [0.798, 0.850],
+  [0.832, 0.872], [0.832, 0.934],                                   // corona face
+  [0.900, 0.944], [0.900, 1.000],                                   // drip fillet + top bed
+];
+
+// Sweep a profile around a rounded rectangle — the square counterpart of a
+// lathe. Vertex (i,j) is ring point i pushed OUT along its own normal by
+// profile[j]'s offset. A LatheGeometry is the special case where the ring is a
+// circle, which is exactly what the beyond's pedestal uses, so the two share
+// PEDESTAL_PROFILE and nothing else needs to agree.
+//
+// halfX/halfZ are the DADO's half-extents (the profile's r=0 face); the cap and
+// plinth then project `proj` beyond them. The corners are radiused because a
+// mitred moulding running into a dead-sharp 90° corner is the single most
+// synthetic thing a renderer can produce — real stone always has a quirk there.
+function makeSweptMouldingGeo(THREE, profile, { halfX, halfZ, height, proj, cornerR, arcSegs = 5 }) {
+  const r = Math.min(cornerR, halfX, halfZ);
+  const ring = [];   // { x, z, nx, nz }
+  // Four quadrant arcs, concatenated. Consecutive arcs' endpoints share a
+  // normal but not a position, so the straight runs between them fall out of
+  // the same loop as flat quads — no separate edge case for the sides.
+  for (let c = 0; c < 4; c++) {
+    const cx = (c === 0 || c === 3 ? 1 : -1) * (halfX - r);
+    const cz = (c === 0 || c === 1 ? 1 : -1) * (halfZ - r);
+    for (let s = 0; s <= arcSegs; s++) {
+      const t = (c + s / arcSegs) * Math.PI / 2;
+      const nx = Math.cos(t), nz = Math.sin(t);
+      ring.push({ x: cx + r * nx, z: cz + r * nz, nx, nz });
+    }
+  }
+  const pos = [], idx = [];
+  const N = ring.length, M = profile.length;
+  for (const p of ring) {
+    for (const [pr, py] of profile) {
+      pos.push(p.x + p.nx * pr * proj, py * height, p.z + p.nz * pr * proj);
+    }
+  }
+  // Winding, worked out rather than guessed at: the ring tangent is
+  // (−sin t, 0, cos t) and the profile edge is +y, and their cross product is
+  // −(cos t, 0, sin t) — pointing back at the axis. So the i-then-j order is
+  // the INWARD one and both quads take the reversed diagonal. An inward-wound
+  // sweep is the nastiest failure available here: the pedestal vanishes from
+  // outside while still casting a perfectly correct shadow.
+  for (let i = 0; i < N; i++) {
+    const a = i * M, b = ((i + 1) % N) * M;
+    for (let j = 0; j < M - 1; j++) idx.push(a + j, b + j + 1, b + j, a + j, a + j + 1, b + j + 1);
+  }
+  // Cap top and bottom so the solid is closed: the seating audit measures
+  // pedestals by their bounding box, and an open shell has no honest one.
+  // Two radii a step apart cross to −y, so the TOP is the reversed fan.
+  for (const [j, y] of [[M - 1, height], [0, 0]]) {
+    const centre = pos.length / 3;
+    pos.push(0, y, 0);
+    for (let i = 0; i < N; i++) {
+      const a = i * M + j, b = ((i + 1) % N) * M + j;
+      if (j) idx.push(centre, b, a); else idx.push(centre, a, b);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  // Wound for the +y-up ring above; if the profile ever flips this is the one
+  // place it shows, so assert it rather than discovering it as black faces.
+  return crease(geo, 0.73); // ≈42°, same threshold the turned members use
+}
+
+// The beyond's pedestal: the same profile on a lathe. One geometry replaces the
+// three stacked cylinders and the floating gilt torus that used to stand here —
+// fewer meshes AND a moulded silhouette, which is the rare case where the lazy
+// change and the good change are the same change.
+function makeLathePedestalGeo(THREE, { radius, height, proj }) {
+  const pts = PEDESTAL_PROFILE.map(([r, y]) => new THREE.Vector2(radius + r * proj, y * height));
+  return crease(new THREE.LatheGeometry(pts, 72), 0.73);
+}
+
 // Rusticated masonry block: 1.32 × 0.5 drafted (bevelled) face extruding 0.5
 // into the wall. The bevel margins catch the light as shadow joints.
 function makeRusticBlockGeo(THREE) {
@@ -2637,7 +3117,8 @@ function makeArchWallGeo(THREE, halfW, height, openHalf, springY, depth) {
   hole.lineTo(openHalf, 0); hole.closePath();
   outer.holes.push(hole);
   return crease(new THREE.ExtrudeGeometry(outer, {
-    depth, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03, curveSegments: 48,
+    depth, bevelEnabled: true, bevelThickness: ARRIS, bevelSize: ARRIS,
+    bevelSegments: 2, curveSegments: 48,
   }), 0.56); // ≈32°: smooth round the intrados, sharp at every arris
 }
 
@@ -2648,16 +3129,24 @@ function makeKeystoneGeo(THREE, halfBot, halfTop, h, depth) {
   const s = new THREE.Shape();
   s.moveTo(-halfBot, 0); s.lineTo(halfBot, 0);
   s.lineTo(halfTop, h); s.lineTo(-halfTop, h); s.closePath();
-  return new THREE.ExtrudeGeometry(s, {
-    depth, bevelEnabled: true, bevelThickness: 0.015, bevelSize: 0.015, bevelSegments: 1,
-  });
+  return crease(new THREE.ExtrudeGeometry(s, {
+    depth, bevelEnabled: true, bevelThickness: ARRIS, bevelSize: ARRIS, bevelSegments: 2,
+  }), 0.73);
 }
 
 // Triangular tympanum slab (pediment infill), apex up, base on local y=0.
+// Measured, not assumed: ExtrudeGeometry's bevel inflates the solid OUTWARD by
+// bevelSize on every axis and symmetrically in z, so the span becomes
+// [−ARRIS, depth+ARRIS] and its centre is still depth/2 — the original centring
+// translate needs no compensation. The 22mm it gains on each raking edge is
+// wanted anyway: a tympanum dies INTO its cornices, and a slab cut exactly to
+// the raking line leaves a hairline of background showing along the joint.
 function makeTympanumGeo(THREE, halfSpan, rise, depth) {
   const s = new THREE.Shape();
   s.moveTo(-halfSpan, 0); s.lineTo(halfSpan, 0); s.lineTo(0, rise); s.closePath();
-  const geo = new THREE.ExtrudeGeometry(s, { depth, bevelEnabled: false });
+  const geo = crease(new THREE.ExtrudeGeometry(s, {
+    depth, bevelEnabled: true, bevelThickness: ARRIS, bevelSize: ARRIS, bevelSegments: 2,
+  }), 0.73);
   geo.translate(0, 0, -depth / 2);
   return geo;
 }
@@ -2669,7 +3158,9 @@ function makePanelFrameGeo(THREE) {
   const hole = new THREE.Path();
   hole.moveTo(-0.62, -0.92); hole.lineTo(0.62, -0.92); hole.lineTo(0.62, 0.92); hole.lineTo(-0.62, 0.92); hole.closePath();
   outer.holes.push(hole);
-  return new THREE.ExtrudeGeometry(outer, { depth: 0.08, bevelEnabled: false });
+  return crease(new THREE.ExtrudeGeometry(outer, {
+    depth: 0.08, bevelEnabled: true, bevelThickness: ARRIS, bevelSize: ARRIS, bevelSegments: 2,
+  }), 0.73);
 }
 
 // Arch-shaped mirror pane. Local: bottom edge at baseY, springs at baseY+springY.

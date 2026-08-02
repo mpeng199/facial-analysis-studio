@@ -1,26 +1,31 @@
-// Self-check for the chamfered unit box in landing.js.
-//   node test-geometry.mjs
-// landing.js is a browser module that boots on import, so the function under
-// test is lifted out by source text and run against a three-shaped stub.
+// Self-checks for the hand-built geometry in landing.js: the chamfered unit box
+// and the swept pedestal moulding.
+//   node dev/test-geometry.mjs
+// landing.js is a browser module that boots on import, so the functions under
+// test are lifted out by source text and run against a three-shaped stub.
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 
 const src = readFileSync(new URL("../landing.js", import.meta.url), "utf8");
-const start = src.indexOf("function makeChamferBoxGeo");
-assert.ok(start > 0, "makeChamferBoxGeo not found in landing.js");
-// to the blank line before the next top-level declaration
-const end = src.indexOf("\n}\n", start) + 3;
+// Lift a top-level `function name(...) { ... }` by source text, to the first
+// closing brace in column 1.
+const lift = (name) => {
+  const start = src.indexOf(`function ${name}`);
+  assert.ok(start > 0, `${name} not found in landing.js`);
+  return src.slice(start, src.indexOf("\n}\n", start) + 3);
+};
 const THREE = {
   BufferGeometry: class {
     constructor() { this.attributes = {}; this.userData = {}; }
     setAttribute(n, a) { this.attributes[n] = a; }
     setIndex(i) { this.index = { array: i, count: i.length }; }
+    computeVertexNormals() { /* stub: normals are not under test here */ }
   },
   Float32BufferAttribute: class {
     constructor(array, itemSize) { this.array = array; this.itemSize = itemSize; this.count = array.length / itemSize; }
   },
 };
-const makeChamferBoxGeo = new Function("THREE", `${src.slice(start, end)}; return makeChamferBoxGeo(THREE);`)
+const makeChamferBoxGeo = new Function("THREE", `${lift("makeChamferBoxGeo")}; return makeChamferBoxGeo(THREE);`)
   .bind(null);
 const geo = makeChamferBoxGeo(THREE);
 
@@ -77,3 +82,126 @@ assert.equal(flipped, 0, `${flipped} triangles wound inward`);
 assert.equal(mismatched, 0, `${mismatched} triangles disagree with their vertex normal`);
 
 console.log(`chamfer box OK — ${pos.count} verts, ${idx.length / 3} tris, closed, all outward`);
+
+// =====================================================================
+// The pedestal order: PEDESTAL_PROFILE and the rounded-rect sweep that
+// turns it into the stone under every cast in the hall.
+// =====================================================================
+const profSrc = src.slice(src.indexOf("const PEDESTAL_PROFILE = ["),
+                          src.indexOf("\n];\n", src.indexOf("const PEDESTAL_PROFILE = [")) + 4);
+const PROFILE = new Function(`${profSrc}; return PEDESTAL_PROFILE;`)();
+
+// 5. profile invariants. These are what the pedestal generator is entitled to
+//    assume, and what the seating maths downstream depends on:
+//    r normalised so the plinth is exactly 1, y running 0 → 1 without ever
+//    going backwards (a lathe fed a non-monotonic profile turns itself inside
+//    out, and the sweep would fold the same way).
+assert.equal(PROFILE[0][1], 0, "profile must start on the ground");
+assert.equal(PROFILE[PROFILE.length - 1][1], 1, "profile must end at full height");
+assert.equal(Math.max(...PROFILE.map(([r]) => r)), 1, "widest course must be exactly 1 (the plinth)");
+for (const [r, y] of PROFILE) {
+  assert.ok(r >= 0 && r <= 1, `profile offset ${r} outside [0,1]`);
+  assert.ok(y >= 0 && y <= 1, `profile height ${y} outside [0,1]`);
+}
+for (let i = 1; i < PROFILE.length; i++) {
+  assert.ok(PROFILE[i][1] >= PROFILE[i - 1][1], `profile turns back on itself at point ${i}`);
+}
+// the dado has to actually exist as a run of straight vertical face, or the
+// "moulded pedestal" is just a continuous blob with no quiet field in it
+const dado = PROFILE.filter(([r]) => r === 0);
+assert.ok(dado.length >= 2 && dado[dado.length - 1][1] - dado[0][1] > 0.35,
+  "profile needs a dado: a straight run at r=0 covering >35% of the height");
+
+const crease = (g) => g; // the real one only recomputes normals; shape is unchanged
+const makeSweptMouldingGeo = new Function("THREE", "crease",
+  `${lift("makeSweptMouldingGeo")}; return makeSweptMouldingGeo;`)(THREE, crease);
+
+// A deliberately rectangular, deliberately asymmetric pedestal — a square one
+// would hide an x/z axis swap, which is exactly the bug this generator is most
+// likely to have.
+const ARC = 5, HX = 0.30, HZ = 0.18, H = 0.58, PROJ = 0.075, R = 0.05;
+const ped = makeSweptMouldingGeo(THREE, PROFILE, {
+  halfX: HX, halfZ: HZ, height: H, proj: PROJ, cornerR: R, arcSegs: ARC,
+});
+const pp = ped.attributes.position.array, pidx = ped.index.array;
+const N = 4 * (ARC + 1), M = PROFILE.length;
+
+// 6. buffer shape: the ring grid, plus one centre vertex for each cap
+assert.equal(ped.attributes.position.count, N * M + 2, "pedestal vertex count");
+assert.equal(pidx.length / 3, N * (M - 1) * 2 + N * 2, "pedestal triangle count");
+
+// 7. closed AND consistently oriented, in one assertion: on a correctly wound
+//    closed surface every DIRECTED edge occurs exactly once, so its reverse is
+//    supplied by the one neighbouring triangle. This catches a hole (an edge
+//    with no partner) and a locally flipped triangle (an edge with the same
+//    direction twice) — a cap fan wound the wrong way round, or a ring that
+//    fails to wrap, both of which otherwise render as an intact-looking
+//    pedestal with a gap you find from exactly one camera angle.
+const pv = (i) => [pp[i * 3], pp[i * 3 + 1], pp[i * 3 + 2]];
+const pkey = (i) => pv(i).map((c) => c.toFixed(5)).join(",");
+const directed = new Map();
+for (let t = 0; t < pidx.length; t += 3) {
+  const k = [pkey(pidx[t]), pkey(pidx[t + 1]), pkey(pidx[t + 2])];
+  assert.equal(new Set(k).size, 3, `degenerate pedestal triangle at ${t / 3}`);
+  for (let e = 0; e < 3; e++) {
+    const id = k[e] + ">" + k[(e + 1) % 3];
+    directed.set(id, (directed.get(id) || 0) + 1);
+  }
+}
+const dupe = [...directed].filter(([, n]) => n !== 1);
+assert.equal(dupe.length, 0, `${dupe.length} directed edges repeated — inconsistent winding`);
+const unpaired = [...directed.keys()].filter((id) => {
+  const [a, b] = id.split(">");
+  return !directed.has(b + ">" + a);
+});
+assert.equal(unpaired.length, 0, `${unpaired.length} edges with no opposite — the surface is open`);
+
+// 8. the consistent orientation points OUT, not in. Signed volume is the honest
+//    test here: a per-triangle "faces away from the axis" check gives false
+//    failures on a steep cavetto over a non-square plan, because on the
+//    shallower pair of faces a raking moulding's normal legitimately dots
+//    negative against a radial reference. Volume has no such blind spot.
+//    (An inward-wound pedestal is the nastiest failure available: invisible
+//    from outside, while still casting a perfectly correct shadow.)
+let vol = 0;
+for (let t = 0; t < pidx.length; t += 3) {
+  const [A, B, C] = [pidx[t], pidx[t + 1], pidx[t + 2]].map(pv);
+  vol += (A[0] * (B[1] * C[2] - B[2] * C[1])
+        - A[1] * (B[0] * C[2] - B[2] * C[0])
+        + A[2] * (B[0] * C[1] - B[1] * C[0])) / 6;
+}
+assert.ok(vol > 0, `pedestal is inside-out (signed volume ${vol.toFixed(5)})`);
+// and it is the volume of an actual pedestal, not a degenerate sliver: the dado
+// prism alone is a safe lower bound, the plinth's bounding box an upper one.
+assert.ok(vol > 4 * HX * HZ * H * 0.5 && vol < 4 * (HX + PROJ) * (HZ + PROJ) * H,
+  `pedestal volume ${vol.toFixed(5)} implausible`);
+
+// 9. the finished stone is the size the seating maths thinks it is. The whole
+//    point of the rebuild is that a figure's footprint fits ON the cap, so if
+//    this drifts the casts start overhanging again — silently.
+let minY = Infinity, maxY = -Infinity, maxX = -Infinity, maxZ = -Infinity;
+for (let i = 0; i < ped.attributes.position.count; i++) {
+  const [x, y, z] = pv(i);
+  minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  maxX = Math.max(maxX, x); maxZ = Math.max(maxZ, z);
+}
+assert.equal(minY.toFixed(6), (0).toFixed(6), "pedestal must stand on local y=0");
+assert.equal(maxY.toFixed(6), H.toFixed(6), "pedestal height");
+assert.ok(Math.abs(maxX - (HX + PROJ)) < 1e-6, `plinth half-width ${maxX} != ${HX + PROJ}`);
+assert.ok(Math.abs(maxZ - (HZ + PROJ)) < 1e-6, `plinth half-depth ${maxZ} != ${HZ + PROJ}`);
+
+// 10. the cap's top bed is what a figure actually stands on, and the seating
+//     code derives its size as max(r) * proj out from the dado. Verify the
+//     geometry agrees with that derivation, since the two are computed in
+//     different places and a mismatch is exactly an overhanging statue.
+const topOut = PROFILE[PROFILE.length - 1][0] * PROJ;
+let capMaxX = -Infinity;
+for (let i = 0; i < N * M; i++) {
+  const [x, y] = pv(i);
+  if (Math.abs(y - H) < 1e-6) capMaxX = Math.max(capMaxX, x);
+}
+assert.ok(Math.abs(capMaxX - (HX + topOut)) < 1e-6,
+  `cap bed half-width ${capMaxX} != dado ${HX} + ${topOut}`);
+
+console.log(`pedestal OK — ${ped.attributes.position.count} verts, ${pidx.length / 3} tris, `
+  + `closed, all outward, plinth ${(HX + PROJ).toFixed(3)}×${(HZ + PROJ).toFixed(3)}, cap bed ${capMaxX.toFixed(3)}`);

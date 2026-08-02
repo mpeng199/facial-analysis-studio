@@ -184,6 +184,66 @@
     return out.sort((x, y) => y.depth - x.depth).slice(0, maxReport);
   }
 
-  window.__audit = { collect, figures, figureClashes, memberClashes, Box3, V3, M4, obbAxes, penetration };
+  // ---- seating: is every cast actually STANDING ON its pedestal? ----
+  //
+  // The regression harness for the bug in the screenshot that prompted the
+  // rebuild: a figure wider than the stone under it, hanging over its own
+  // plinth. Purely a bounding-box question, but it cannot be asked until the
+  // GLBs have loaded, which is why it lives here and not in test-geometry.mjs.
+  //
+  //   __audit.seating()            → one row per cast; `ok` false is a failure
+  //   __audit.seating().filter(r => !r.ok)   → must be empty
+  //
+  // margin  the smallest gap between the cast's footprint and the edge of the
+  //         cap, per axis. NEGATIVE means overhanging. The back margin in z is
+  //         reported separately and deliberately NOT failed on: placement is
+  //         biased forward so any shortfall hides behind the niche backing.
+  // gapY    cast's lowest point minus the cap's top. Must be ~0: positive is a
+  //         figure floating above its pedestal, negative is one sunk into it.
+  // headroom crown of the niche arch minus the top of the cast. Negative means
+  //         the figure is bursting through its own arch, which is the other
+  //         half of what made these read wrong.
+  const NICHE_CROWN_Y = 1.05 + 2.68;   // sill + NICHE_SPRING + NICHE_OPEN, from landing.js
+  function seating(tol = 0.002) {
+    const peds = new Map(), figs = new Map();
+    H.scene.updateMatrixWorld(true);
+    H.scene.traverse((o) => {
+      if (o.name && o.name.startsWith("pedestal:")) peds.set(o.name.slice(9), o);
+      if (o.name && o.name.startsWith("figure:")) figs.set(o.name.slice(7), o);
+    });
+    const v = new V3(), out = [];
+    for (const [name, f] of figs) {
+      const p = peds.get(name);
+      if (!p) { out.push({ figure: name, ok: false, why: "no pedestal" }); continue; }
+      const fb = new Box3().setFromObject(f), pb = new Box3().setFromObject(p);
+      // the footprint: the lowest tenth, the same slice landing.js cuts the
+      // pedestal from, so the two are answering the same question
+      const cut = fb.min.y + (fb.max.y - fb.min.y) * 0.1;
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      f.traverse((o) => {
+        if (!o.isMesh) return;
+        const a = o.geometry.attributes.position;
+        for (let i = 0; i < a.count; i++) {
+          v.fromBufferAttribute(a, i).applyMatrix4(o.matrixWorld);
+          if (v.y > cut) continue;
+          if (v.x < x0) x0 = v.x; if (v.x > x1) x1 = v.x;
+          if (v.z < z0) z0 = v.z; if (v.z > z1) z1 = v.z;
+        }
+      });
+      const marginX = Math.min(x0 - pb.min.x, pb.max.x - x1);
+      const frontZ = pb.max.z - z1, backZ = z0 - pb.min.z;
+      const gapY = fb.min.y - pb.max.y;
+      const headroom = NICHE_CROWN_Y - fb.max.y;
+      out.push({
+        figure: name,
+        ok: marginX > tol && frontZ > tol && Math.abs(gapY) < 0.01 && headroom > 0,
+        marginX: +marginX.toFixed(4), frontZ: +frontZ.toFixed(4), backZ: +backZ.toFixed(4),
+        gapY: +gapY.toFixed(4), headroom: +headroom.toFixed(3),
+      });
+    }
+    return out;
+  }
+
+  window.__audit = { collect, figures, figureClashes, memberClashes, seating, Box3, V3, M4, obbAxes, penetration };
   return "audit ready";
 })();
