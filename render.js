@@ -230,12 +230,9 @@ function summaryHTML(R) {
     <div class="card"><h4>Worth your attention${qm("sec:improvement")}</h4>
       <p class="why card-lede">Ranked by how much difference a change would make. The second number is a realistic ceiling, not a promise.</p>
       <ul class="plain-list">
-      ${R.improvement.slice(0, 5).map((im) => {
-        const key = R.results.find((r) => r.label === im.label)?.key;
-        return `<li><span class="lead">Your ${esc(gname(key, im.label.toLowerCase()))}</span>
+      ${R.improvement.slice(0, 5).map((im) => `<li><span class="lead">Your ${esc(gname(im.key, im.label.toLowerCase()))}</span>
           <span class="pill ${scoreClass(im.current)}">${im.current} → ${im.potential}</span>
-          <div class="why">${esc(CHANGEABILITY[im.note] || im.note)}</div></li>`;
-      }).join("")
+          <div class="why">${esc(CHANGEABILITY[im.note] || im.note)}</div></li>`).join("")
       || `<li class="why">Nothing scored low enough to flag as a priority.</li>`}
     </ul></div>
   </div>`;
@@ -337,7 +334,7 @@ export function buildReportHTML(R) {
 
   html += sect("Improvement potential", "sec:improvement") + `<div class="cards">`;
   for (const im of R.improvement) {
-    html += `<div class="card"><h4>${esc(im.label)}</h4>
+    html += `<div class="card"><h4>${esc(im.label)}${qm(im.key)}</h4>
       <div class="metric"><span class="mlabel">Now → potential</span><span class="mval">${im.current} → <b style="color:var(--good)">${im.potential}</b></span></div>
       <div class="bar"><i style="width:${im.potential}%;background:linear-gradient(90deg,${scoreColor(im.current)} ${im.current}%,var(--good) ${im.current}%)"></i></div>
       <p class="why" style="margin-top:6px">${esc(CHANGEABILITY[im.note] || im.note)}</p></div>`;

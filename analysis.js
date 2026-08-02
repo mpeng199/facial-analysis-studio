@@ -376,7 +376,9 @@ export function analyze(ctx) {
   // 10. Aging trajectory + improvement potential + protocol.
   const aging = agingTrajectory(meta.age, results, sex);
   const improvement = weaknesses.slice(0, 6).map((w) => ({
-    label: w.label, region: w.region, current: w.score,
+    // `key` rides along so the report can look the metric up (glossary, plain
+    // name) without matching on the display label.
+    key: w.key, label: w.label, region: w.region, current: w.score,
     potential: Math.min(100, w.score + Math.round(improvability(w.key) * 30)),
     note: improvability(w.key) >= 0.6 ? "Highly responsive to non-surgical work"
       : improvability(w.key) >= 0.3 ? "Partially improvable non-surgically"

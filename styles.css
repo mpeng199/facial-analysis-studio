@@ -1281,7 +1281,8 @@ footer {
 }
 
 @media print {
-  .topbar, .stepper, .step-nav, .report-rail, .btn { display: none !important; }
+  /* a `?` you cannot hover is just a circle in the margin */
+  .topbar, .stepper, .step-nav, .report-rail, .btn, .qm { display: none !important; }
   body { background: #fff; }
   .step { display: none !important; }
   .step.on { display: block !important; animation: none; }
