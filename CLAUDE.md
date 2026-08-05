@@ -75,8 +75,55 @@ node dev/test-geometry.mjs
 Self-checks for the hand-built geometry in `landing.js`: the chamfered unit box
 (counts, closed manifold, outward winding) and the swept pedestal moulding
 (profile invariants, consistent orientation, signed volume, finished
-dimensions). `test.html` is the 19-assert analysis-engine suite (open it in a
+dimensions). `test.html` is the 26-assert analysis-engine suite (open it in a
 browser; needs no camera).
+
+`dev/test-morph.html` is the corrected-face morph's suite (55 asserts). Open it
+in a browser; needs no camera. It builds a synthetic face at phone resolution,
+downscales it exactly as `app.js` does, and runs the real
+`buildWarpMesh`/`computeTargets`/`renderMorph`. **Every ideal-driven edit is
+checked by re-measuring the metric through `analysis.js`'s own `compute()` on
+the warped landmarks**, so a sign error in any editor fails here.
+
+`dev/report-preview.html` renders the report from a synthetic head.
+
+## The corrected-face morph
+
+Built to QOVES' described pipeline. `morph.js`:
+
+1. **Measured, not filtered.** Each frontal metric's distance to its ideal band
+   (`analysis.js` `METRICS[].ideal`) becomes a geometric edit on the landmarks
+   that define it — canthal tilt, lid aperture (scleral show), brow height, nose
+   and mouth width, lip fullness, bigonial width, FWHR, vertical thirds → 1:1:1
+   — plus a midline symmetrization. `EDITS` holds one editor per metric.
+2. **Two morphs.** `realistic` scales every edit by `improvability(key)` — the
+   same table driving the report's improvement ceilings, so the picture can
+   never promise more than the protocol. `formulaic` drives everything to the
+   ideal. Default is realistic.
+3. **Three mesh bands** (`buildWarpMesh`): landmarks, a free surround ring, a
+   pinned frame. Without the middle band a widened jaw was absorbed by a few
+   enormous triangles and the surroundings smeared.
+
+Four things that are load-bearing, each of which was a visible bug:
+
+- **`renderMorph` must draw the source into the `(0,0,W,H)` box**, never
+  `drawImage(image, 0, 0)`. Landmarks live in the ≤`MAX_SIDE` canvas space while
+  the `<img>` is full camera resolution; drawing at natural size made every
+  triangle sample a magnified fragment and collapsed the face into a blob.
+- **The clip path is outset half a pixel.** Canvas antialiases clips, so
+  abutting triangles leave hairline gaps. They hide while the warp is gentle and
+  appear as a web of bright cracks once it is not.
+- **Mirror pairs come from mesh topology** (`MIRROR`, derived from `IDX` key
+  names), not from a nearest-neighbour search. Proximity matching closed 6% of
+  the asymmetry gap where the topology table closes the full 55%, and its
+  self-match case actively made pairs worse.
+- **Edit falloff radius is sized to the feature** (`span`), never a fixed value.
+  A bump wide enough to reach the landmark the metric is measured *against*
+  moves both ends and changes nothing.
+
+The iris is translated rigidly with its eye — its ring vertices are ordered
+around the circle, so index *k* is the same angle on **both** eyes and pairing
+them by index tears the pupil.
 
 `dev/_audit.js` is the dev-only geometry auditor — **not** referenced by any
 page, and 404'd in `netlify.toml`. It is the regression harness for the

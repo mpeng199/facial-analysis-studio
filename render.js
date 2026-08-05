@@ -292,8 +292,16 @@ export function buildReportHTML(R) {
     `<div class="canvas-wrap">
       <figure><canvas id="overlayCanvas"></canvas><figcaption>Every point the software found, plus the guide lines it measured against: your midline, the thirds and fifths, and the axis through each eye.</figcaption></figure>
       <figure><canvas id="morphCanvas"></canvas>
-        <div class="slider-row"><span class="muted">Real</span><input type="range" id="morphSlider" min="0" max="100" value="0"><span class="muted">Corrected</span></div>
-        <figcaption>Drag to see your face gently evened out and the eye corners lifted. It's an illustration of the direction, not a preview of a result.</figcaption>
+        <div class="slider-row"><span class="muted">Real</span>
+          <input type="range" id="morphSlider" min="0" max="100" value="0"
+            aria-label="Blend between your real face and the corrected version">
+          <span class="muted">Corrected</span></div>
+        <div class="morph-modes" role="radiogroup" aria-label="Which morph to show">
+          <label><input type="radio" name="morphMode" value="realistic" checked> Realistic</label>
+          <label><input type="radio" name="morphMode" value="formulaic"> Formulaic</label>
+        </div>
+        <figcaption>Drag to see each measurement below moved toward its ideal range — canthal tilt, lid aperture, brow height, nose and mouth width, lip fullness, jaw width and the vertical thirds — plus a soft correction toward your own midline. It's an illustration of the direction, not a preview of a result.
+        <span class="morph-note" id="morphModeNote">Bounded to what soft-tissue work, dermatology and grooming actually move — every edit is scaled by the same improvability figure the protocol above uses.</span></figcaption>
       </figure>
     </div>`;
 

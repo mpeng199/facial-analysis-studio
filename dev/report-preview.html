@@ -99,9 +99,17 @@
     const report = document.getElementById("report");
     report.innerHTML = buildReportHTML(R);
 
-    // The two canvases are drawn by app.js from the real photo; here they'd be
-    // empty boxes, so drop them and keep the rest of the layout honest.
-    report.querySelectorAll(".canvas-wrap figure").forEach((f) => f.remove());
+    // The two canvases are drawn by app.js from the real photo. Swap them for a
+    // labelled placeholder rather than dropping the figures wholesale — the
+    // morph slider and its Realistic/Formulaic toggle live in that figure, and
+    // this harness exists to look at the report's layout.
+    report.querySelectorAll(".canvas-wrap canvas").forEach((c) => {
+      const box = document.createElement("div");
+      box.textContent = "(" + c.id.replace("Canvas", "") + " — needs a real photo)";
+      box.style.cssText = "aspect-ratio:3/4;display:grid;place-items:center;border-radius:12px;"
+        + "background:color-mix(in srgb, var(--ink) 6%, transparent);color:var(--muted);font-size:.8rem";
+      c.replaceWith(box);
+    });
     report.hidden = false;   // the signal wizard.js waits on to build the rail
 
     console.log("report built:", {

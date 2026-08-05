@@ -2,7 +2,7 @@
 import { getLandmarker, getVideoLandmarker, detectImage, IDX, PROFILE_POINTS } from "./landmarks.js";
 import * as G from "./geometry3d.js";
 import { analyze } from "./analysis.js";
-import { delaunay, computeTargets, renderMorph } from "./morph.js";
+import { buildWarpMesh, computeTargets, renderMorph } from "./morph.js";
 import { buildReportHTML } from "./render.js";
 
 const $ = (id) => document.getElementById(id);
@@ -402,11 +402,37 @@ function setupMorph(R) {
   const canvas = $("morphCanvas");
   canvas.width = src.w; canvas.height = src.h;
   const ctx = canvas.getContext("2d");
-  const tris = delaunay(src.pxPts);
-  const targets = computeTargets(src.pxPts);
-  morphCache = { ctx, img: src.img, pxPts: src.pxPts, targets, tris };
-  renderMorph(ctx, src.img, src.pxPts, targets, tris, 0);
-  $("morphSlider").addEventListener("input", (e) => {
-    renderMorph(morphCache.ctx, morphCache.img, morphCache.pxPts, morphCache.targets, morphCache.tris, e.target.value / 100);
+  // The mesh carries a pinned border, so an edit that moves the silhouette has
+  // tissue to stretch into instead of tearing against a static background.
+  const { points, tris, faceCount, freeCount } = buildWarpMesh(src.pxPts, src.w, src.h);
+  const frontal = R.results.filter((r) => r.side !== "profile");
+  const targetsFor = (mode) => computeTargets(points, { faceCount, freeCount, metrics: frontal, mode });
+  morphCache = { ctx, img: src.img, points, tris, targetsFor, targets: targetsFor("realistic") };
+
+  const slider = $("morphSlider");
+  const draw = () => renderMorph(morphCache.ctx, morphCache.img, morphCache.points,
+    morphCache.targets, morphCache.tris, slider.value / 100);
+  draw();
+
+  // Coalesce to one render per frame: `input` fires faster than the display
+  // refreshes during a drag, and each frame is ~900 clipped triangles.
+  let queued = false;
+  slider.addEventListener("input", () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; draw(); });
   });
+
+  for (const radio of document.querySelectorAll('input[name="morphMode"]')) {
+    radio.addEventListener("change", (e) => {
+      if (!e.target.checked) return;
+      morphCache.targets = morphCache.targetsFor(e.target.value);
+      $("morphModeNote").textContent = MORPH_NOTE[e.target.value];
+      draw();
+    });
+  }
 }
+const MORPH_NOTE = {
+  realistic: "Bounded to what soft-tissue work, dermatology and grooming actually move — every edit is scaled by the same improvability figure the protocol above uses.",
+  formulaic: "Unbounded: every measurement driven the whole way to its ideal range, including the parts of your face that only bone surgery would change. Shown for contrast, not as a target.",
+};

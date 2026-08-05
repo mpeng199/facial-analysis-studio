@@ -470,7 +470,10 @@ function perceivedAgeEstimate(age, results, sym) {
 
 // How much a feature can move without surgery (0..1). Soft-tissue/skin/fat high;
 // bone structure low.
-function improvability(key) {
+// How far a feature actually moves without surgery, 0–1. Drives the improvement
+// ceilings in the report and, through morph.js, the bound on the "realistic"
+// morph — so the picture can never promise more than the protocol does.
+export function improvability(key) {
   const map = {
     symmetry: 0.15, canthalTilt: 0.15, gonial: 0.2, jawWidth: 0.35, fwhr: 0.4,
     lowerThird: 0.15, nasofrontal: 0.1, nasolabial: 0.1, convexity: 0.15,

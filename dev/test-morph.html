@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Morph self-check (dev) — Facial Analysis Studio</title>
+  <!--
+    Dev-only harness for the corrected-face morph (morph.js + the canvas half of
+    app.js's setupMorph). Reaching that slider normally needs a camera, a face
+    and a MediaPipe download, so nothing else in the repo could see it — which is
+    how it shipped drawing the full-resolution photo into a canvas whose
+    landmarks were in downscaled space, collapsing every face into a blob.
+
+    This rebuilds the real path with no camera:
+      synthetic face drawn at phone resolution (2160x2880)
+        -> downscaled exactly like app.js drawToCanvas() (MAX_SIDE 720)
+        -> normalized landmarks -> G.toPixels() -> buildWarpMesh/computeTargets
+        -> renderMorph() into a canvas sized like app.js setupMorph()
+    and then reads the pixels back. Every ideal-driven edit is checked by
+    re-measuring the metric through analysis.js's OWN compute function on the
+    warped landmarks, so a sign error anywhere fails here rather than shipping.
+
+    Not part of the site: /dev/* is 404'd in netlify.toml. Serve the repo root
+    (preview_start "hall") and open /dev/test-morph.html.
+  -->
+  <style>
+    body { font: 14px/1.6 ui-monospace, Menlo, monospace; padding: 24px; background: #0e0f13; color: #eceef2; }
+    .pass { color: #3ecf7a; } .fail { color: #ff5a5f; font-weight: 700; }
+    .note { color: #7d8494; }
+    h1 { font-size: 1.6rem; margin: 0 0 18px; }
+    h2 { font-size: 0.78rem; color: #9aa0ae; font-weight: 600; margin: 24px 0 6px; text-transform: uppercase; letter-spacing: .1em; }
+    .sum { margin: 20px 0; font-size: 1.15rem; }
+    .strip { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 12px; }
+    figure { margin: 0; }
+    figure canvas { width: 190px; border-radius: 8px; background: #fff; display: block; }
+    figcaption { font-size: .72rem; color: #9aa0ae; margin-top: 6px; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>Corrected-face morph self-check</h1>
+  <div id="out"></div>
+  <div class="sum" id="sum"></div>
+  <h2>Rendered</h2>
+  <div class="strip" id="strip"></div>
+
+  <script type="module">
+    // Cache-buster for the reason report-preview.html uses one: a `?cb=` on this
+    // page does not reach its module graph, so the pane will happily serve a
+    // stale morph.js while the file on disk has changed.
+    const v = "?cb=" + Date.now();
+    const [G, { IDX }, M, A] = await Promise.all([
+      import("../geometry3d.js" + v),
+      import("../landmarks.js" + v),
+      import("../morph.js" + v),
+      import("../analysis.js" + v),
+    ]);
+
+    const out = document.getElementById("out"), strip = document.getElementById("strip");
+    let pass = 0, fail = 0;
+    function assert(name, cond, detail = "") {
+      const ok = !!cond; ok ? pass++ : fail++;
+      out.insertAdjacentHTML("beforeend",
+        `<div class="${ok ? "pass" : "fail"}">${ok ? "✓" : "✗"} ${name}${ok ? "" : "  — " + detail}</div>`);
+    }
+    const note = (s) => out.insertAdjacentHTML("beforeend", `<div class="note">· ${s}</div>`);
+    const head = (s) => out.insertAdjacentHTML("beforeend", `<h2>${s}</h2>`);
+
+    // =======================================================================
+    // A synthetic face, drawn at phone resolution.
+    // =======================================================================
+    // A real face is a symmetric plan carrying a smooth lopsidedness, and that
+    // matters: an earlier version of this harness scattered asymmetric features
+    // over a perfectly symmetric filler lattice, which put a landmark needing
+    // 4px of correction 1.6px from one needing none. No face is built that way,
+    // and tuning the algorithm to satisfy it was tuning it to satisfy an
+    // impossible input. So: a symmetric plan, then ONE smooth skew field applied
+    // to every landmark and every drawn feature alike.
+    //
+    // The proportions are deliberately off-ideal — round eyes, downturned
+    // canthi, low brows, a broad nose, a narrow mouth, a wide jaw — so that
+    // every editor in morph.js has something to do.
+    const PHOTO_W = 2160, PHOTO_H = 2880;   // 3:4, ~6MP — a plain phone portrait
+    const SEX = "f";
+
+    const FACE = {
+      cx: 0.50, cy: 0.52, rx: 0.26, ry: 0.34,
+      // Off-ideal but anatomically possible. An earlier draft pushed these so
+      // far (brow 3px clear of the lid, inner-lip borders 0.7px apart) that the
+      // edits could only interfere with each other — a face no measurement
+      // could describe, let alone a warp correct.
+      eyeDx: 0.105, eyeY: 0.450, eyeRx: 0.052, eyeRy: 0.0177, // ~2.2 almondness: round
+      tiltDeg: -5,                                            // downturned canthi
+      browGap: 0.042,                                         // ~0.31 eye-widths: low
+      nose: { y: 0.575, w: 0.098 },                           // broad
+      mouth: { y: 0.700, w: 0.115, upper: 0.016, lower: 0.030, inner: 0.005 },
+      jawW: 0.205, jawY: 0.735,                               // wide bigonial
+      chin: 0.885, hair: 0.205,
+    };
+    // The lopsidedness: `s` runs -1 (subject's right) to +1 (subject's left).
+    // One side rides higher and bows outward, decaying to nothing at the midline
+    // and at the edges — smooth everywhere, so every vertex in a neighbourhood
+    // shares it, which is the property the old harness lacked.
+    const TILT = 0.013, BOW = 0.009, SIZE = 0.09;
+    const skew = (nx, ny) => {
+      const s = Math.max(-1, Math.min(1, (nx - FACE.cx) / FACE.rx));
+      return [nx + BOW * s * (1 - Math.abs(s)) * FACE.rx, ny + TILT * s];
+    };
+    const eyeOf = (sign) => {
+      const [x, y] = skew(FACE.cx + sign * FACE.eyeDx, FACE.eyeY);
+      const g = 1 + SIZE * sign;
+      return { x, y, rx: FACE.eyeRx * g, ry: FACE.eyeRy * g, sign };
+    };
+    const EYES = [eyeOf(-1), eyeOf(1)];                       // [subject right, left]
+    const at = (nx, ny) => { const [x, y] = skew(nx, ny); return { x, y }; };
+    const NOSE = at(FACE.cx, FACE.nose.y), MOUTH = at(FACE.cx, FACE.mouth.y);
+    // Outer canthus vertical offset that realises FACE.tiltDeg on each eye.
+    const tiltDrop = (e) => -Math.tan(FACE.tiltDeg * Math.PI / 180) * (e.rx * PHOTO_W) / PHOTO_H;
+
+    function drawFace(ctx, W, H) {
+      // Coarse checker background: any warp that leaks to the frame, or that
+      // rescales the source, shows up here instantly.
+      const cell = W / 12;
+      for (let y = 0; y * cell < H; y++)
+        for (let x = 0; x * cell < W; x++) {
+          ctx.fillStyle = (x + y) % 2 ? "#dfe4f2" : "#c3cbe4";
+          ctx.fillRect(x * cell, y * cell, cell, cell);
+        }
+      // Face + hair as skewed polygons, so silhouette and landmarks agree.
+      const oval = (rx, ry, dy, fill) => {
+        ctx.beginPath();
+        for (let k = 0; k <= 64; k++) {
+          const a = (k / 64) * Math.PI * 2;
+          const p = at(FACE.cx + rx * Math.cos(a), FACE.cy + dy + ry * Math.sin(a));
+          k ? ctx.lineTo(p.x * W, p.y * H) : ctx.moveTo(p.x * W, p.y * H);
+        }
+        ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+      };
+      oval(FACE.rx * 1.13, FACE.ry * 1.09, -0.03, "#3b2f2a");
+      oval(FACE.rx, FACE.ry, 0, "#e8c4a8");
+      ctx.lineCap = "round";
+      for (const e of EYES) {
+        // brow
+        ctx.strokeStyle = "#4a382f"; ctx.lineWidth = 0.015 * W;
+        ctx.beginPath();
+        ctx.moveTo((e.x - e.rx) * W, (e.y - FACE.browGap) * H);
+        ctx.lineTo((e.x + e.rx) * W, (e.y - FACE.browGap - 0.004) * H);
+        ctx.stroke();
+        // eye, rotated to the authored canthal tilt
+        const drop = tiltDrop(e);
+        ctx.save();
+        ctx.translate(e.x * W, e.y * H);
+        ctx.rotate(Math.atan2(drop * H * e.sign, e.rx * W));
+        for (const [rx, ry, fill] of [[e.rx, e.ry, "#fbfbfd"],
+          [e.ry * 0.74, e.ry * 0.74, "#2f6ea8"], [e.ry * 0.31, e.ry * 0.31, "#11131a"]]) {
+          ctx.beginPath(); ctx.ellipse(0, 0, rx * W, ry * H, 0, 0, Math.PI * 2);
+          ctx.fillStyle = fill; ctx.fill();
+        }
+        ctx.restore();
+      }
+      // nose
+      ctx.strokeStyle = "#c79a7c"; ctx.lineWidth = 0.010 * W;
+      ctx.beginPath();
+      ctx.moveTo(NOSE.x * W, (NOSE.y - 0.075) * H);
+      ctx.lineTo((NOSE.x - FACE.nose.w / 2) * W, NOSE.y * H);
+      ctx.lineTo((NOSE.x + FACE.nose.w / 2) * W, NOSE.y * H);
+      ctx.stroke();
+      // lips: thin upper, full lower
+      ctx.fillStyle = "#b6595c";
+      ctx.beginPath();
+      ctx.moveTo((MOUTH.x - FACE.mouth.w) * W, MOUTH.y * H);
+      ctx.quadraticCurveTo(MOUTH.x * W, (MOUTH.y - FACE.mouth.upper * 2) * H, (MOUTH.x + FACE.mouth.w) * W, MOUTH.y * H);
+      ctx.quadraticCurveTo(MOUTH.x * W, (MOUTH.y + FACE.mouth.lower * 2) * H, (MOUTH.x - FACE.mouth.w) * W, MOUTH.y * H);
+      ctx.fill();
+    }
+
+    const photo = document.createElement("canvas");
+    photo.width = PHOTO_W; photo.height = PHOTO_H;
+    drawFace(photo.getContext("2d"), PHOTO_W, PHOTO_H);
+    // Two versions of the same photo, each the right probe for a different
+    // question. The flat one — razor-sharp boundaries, no texture — is the worst
+    // case a triangle warp can be handed and no camera produces it, but that is
+    // exactly what makes a hairline seam visible, so the seam assertion uses it.
+    // Everything else uses a softened, grainy version, because judging a warp on
+    // a fixture harsher than any real input is judging the fixture.
+    const imgSharp = await new Promise((res, rej) => {
+      const i = new Image();
+      i.onload = () => res(i); i.onerror = rej; i.src = photo.toDataURL("image/png");
+    });
+    {
+      const soft = document.createElement("canvas");
+      soft.width = PHOTO_W; soft.height = PHOTO_H;
+      const sc = soft.getContext("2d");
+      sc.filter = "blur(6px)";
+      sc.drawImage(photo, 0, 0);
+      const pc = photo.getContext("2d");
+      pc.filter = "none";
+      pc.drawImage(soft, 0, 0);
+      const im = pc.getImageData(0, 0, PHOTO_W, PHOTO_H);
+      const px = im.data;
+      let seed = 12345;
+      for (let i = 0; i < px.length; i += 4) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;      // deterministic grain
+        const g = ((seed >> 16) % 21) - 10;
+        px[i] += g; px[i + 1] += g; px[i + 2] += g;
+      }
+      pc.putImageData(im, 0, 0);
+    }
+    const img = await new Promise((res, rej) => {
+      const i = new Image();
+      i.onload = () => res(i); i.onerror = rej; i.src = photo.toDataURL("image/png");
+    });
+
+    head("Pipeline");
+    assert("synthetic photo loads at full resolution",
+      img.naturalWidth === PHOTO_W && img.naturalHeight === PHOTO_H, `${img.naturalWidth}x${img.naturalHeight}`);
+
+    // ---- app.js's downscale, reproduced exactly (app.js:9, drawToCanvas) ----
+    const MAX_SIDE = 720;
+    const scale = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+    const W = Math.round(img.naturalWidth * scale), H = Math.round(img.naturalHeight * scale);
+    assert("photo is downscaled before detection (the space landmarks live in)",
+      W < img.naturalWidth && Math.max(W, H) === MAX_SIDE, `${W}x${H}`);
+
+    // ---- a dense 478-point mesh in normalized space, like MediaPipe's ----
+    const lm = Array.from({ length: 478 }, () => null);
+    const put = (i, nx, ny) => { lm[i] = { x: nx, y: ny, z: 0 }; };
+    const putP = (i, p) => put(i, p.x, p.y);
+    putP(IDX.foreheadTop, at(FACE.cx, FACE.cy - FACE.ry * 0.96));
+    putP(IDX.menton, at(FACE.cx, FACE.chin));
+    putP(IDX.nasion, at(FACE.cx, FACE.eyeY - 0.012));
+    putP(IDX.noseTip, at(FACE.cx, FACE.nose.y - 0.020));
+    putP(IDX.subnasale, at(FACE.cx, FACE.nose.y + 0.012));
+    putP(IDX.alaR, at(FACE.cx - FACE.nose.w / 2, FACE.nose.y));
+    putP(IDX.alaL, at(FACE.cx + FACE.nose.w / 2, FACE.nose.y));
+    putP(IDX.alaRInner, at(FACE.cx - FACE.nose.w / 4, FACE.nose.y + 0.003));
+    putP(IDX.alaLInner, at(FACE.cx + FACE.nose.w / 4, FACE.nose.y + 0.003));
+    putP(IDX.glabella, at(FACE.cx, FACE.eyeY - FACE.browGap - 0.020));
+    putP(IDX.mouthR, at(FACE.cx - FACE.mouth.w, FACE.mouth.y));
+    putP(IDX.mouthL, at(FACE.cx + FACE.mouth.w, FACE.mouth.y));
+    putP(IDX.lipTop, at(FACE.cx, FACE.mouth.y - FACE.mouth.upper));
+    putP(IDX.lipInnerTop, at(FACE.cx, FACE.mouth.y - FACE.mouth.inner));
+    putP(IDX.lipInnerBottom, at(FACE.cx, FACE.mouth.y + FACE.mouth.inner));
+    putP(IDX.lipBottom, at(FACE.cx, FACE.mouth.y + FACE.mouth.lower));
+    putP(IDX.cupidR, at(FACE.cx - FACE.mouth.w * 0.3, FACE.mouth.y - FACE.mouth.upper * 0.9));
+    putP(IDX.cupidL, at(FACE.cx + FACE.mouth.w * 0.3, FACE.mouth.y - FACE.mouth.upper * 0.9));
+    putP(IDX.zygoR, at(FACE.cx - FACE.rx, FACE.cy - 0.010));
+    putP(IDX.zygoL, at(FACE.cx + FACE.rx, FACE.cy - 0.010));
+    putP(IDX.cheekR, at(FACE.cx - FACE.rx * 0.80, FACE.cy + 0.070));
+    putP(IDX.cheekL, at(FACE.cx + FACE.rx * 0.80, FACE.cy + 0.070));
+    putP(IDX.gonionR, at(FACE.cx - FACE.jawW, FACE.jawY));
+    putP(IDX.gonionL, at(FACE.cx + FACE.jawW, FACE.jawY));
+    for (const e of EYES) {
+      const outward = e.sign, drop = tiltDrop(e);
+      const [o, i2, t, b, ap, ih, tl, ic, ir] = e.sign < 0
+        ? [IDX.eyeROuter, IDX.eyeRInner, IDX.eyeRTop, IDX.eyeRBottom, IDX.browRApex, IDX.browRInner, IDX.browRTail, IDX.irisRCenter, IDX.irisRRing]
+        : [IDX.eyeLOuter, IDX.eyeLInner, IDX.eyeLTop, IDX.eyeLBottom, IDX.browLApex, IDX.browLInner, IDX.browLTail, IDX.irisLCenter, IDX.irisLRing];
+      put(o, e.x + outward * e.rx, e.y + drop);
+      put(i2, e.x - outward * e.rx, e.y - drop);
+      put(t, e.x, e.y - e.ry); put(b, e.x, e.y + e.ry);
+      put(ap, e.x, e.y - FACE.browGap); put(ih, e.x - outward * e.rx, e.y - FACE.browGap);
+      put(tl, e.x + outward * e.rx, e.y - FACE.browGap - 0.004);
+      put(ic, e.x, e.y);
+      ir.forEach((k, m2) => put(k, e.x + e.ry * 0.74 * Math.cos(m2 * Math.PI / 2),
+                                  e.y + e.ry * 0.74 * Math.sin(m2 * Math.PI / 2)));
+    }
+    // Fill the rest on a mirrored lattice inside the oval, then skew it — so the
+    // filler shares the face's lopsidedness instead of contradicting it.
+    const free = lm.reduce((a, p, i) => (p ? a : (a.push(i), a)), []);
+    for (let k = 0; k * 2 < free.length; k++) {
+      const ring = 0.18 + 0.80 * ((k * 0.6180339887) % 1), ang = (k * 2.399963) % (Math.PI * 2);
+      const ddx = Math.abs(Math.cos(ang)) * ring * FACE.rx, ddy = Math.sin(ang) * ring * FACE.ry;
+      putP(free[2 * k], at(FACE.cx - ddx, FACE.cy + ddy));
+      if (free[2 * k + 1] != null) putP(free[2 * k + 1], at(FACE.cx + ddx, FACE.cy + ddy));
+    }
+    assert("mesh has all 478 landmarks", lm.every((p) => p && isFinite(p.x) && isFinite(p.y)));
+
+    const pxPts = G.toPixels(lm, W, H);
+
+    // =======================================================================
+    // The warp mesh, with its pinned frame.
+    // =======================================================================
+    head("Warp mesh");
+    const { points, tris, faceCount, freeCount } = M.buildWarpMesh(pxPts, W, H);
+    const area = (a, b, c) => ((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) / 2;
+    assert("face landmarks keep their indices", faceCount === pxPts.length &&
+      points.slice(0, faceCount).every((p, i) => p.x === pxPts[i].x && p.y === pxPts[i].y));
+    assert("the mesh has a free surround and a pinned frame",
+      freeCount > faceCount && points.length > freeCount,
+      `${freeCount - faceCount} surround, ${points.length - freeCount} frame`);
+    assert("delaunay returns a dense mesh", tris.length > 400, tris.length);
+    assert("no degenerate (zero-area) triangles",
+      tris.every((t) => Math.abs(area(points[t[0]], points[t[1]], points[t[2]])) > 1e-6));
+    // With a border ring the mesh must tile the WHOLE photo, not just the face
+    // hull — that is what gives an edit somewhere to stretch into.
+    const triArea = tris.reduce((s, t) => s + Math.abs(area(points[t[0]], points[t[1]], points[t[2]])), 0);
+    assert("triangles tile the entire photo exactly once (no gaps, no overlap)",
+      Math.abs(triArea - W * H) / (W * H) < 0.005, `tri=${triArea.toFixed(0)} photo=${W * H}`);
+
+    // =======================================================================
+    // Ideal-driven edits, re-measured through analysis.js's own compute().
+    // =======================================================================
+    head("Ideal-driven edits");
+    const asF = (P) => P.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+    const byKey = Object.fromEntries(A.METRICS.map((m) => [m.key, m]));
+    const rangeOf = (m) => m.ideal.all || m.ideal[SEX] || m.ideal.f;
+    // Measure the synthetic face the way analyze() would.
+    const measure = (P) => Object.keys(M.EDITS).map((key) => {
+      const m = byKey[key];
+      let value = null;
+      try { value = m.compute({ F: asF(P) }); } catch { value = null; }
+      return { key, label: m.label, value, range: rangeOf(m) };
+    }).filter((r) => r.value != null && isFinite(r.value));
+
+    const before = measure(pxPts);
+    const off = before.filter((r) => r.value < r.range[0] || r.value > r.range[1]);
+    assert("the synthetic face is off-ideal on most metrics, so every editor fires",
+      off.length >= 5, `${off.length} of ${before.length} outside their ideal band`);
+    note(before.map((r) => `${r.key} ${r.value.toFixed(2)} [${r.range}]`).join("  ·  "));
+
+    const metrics = before.concat([{ key: "thirds", value: 50, range: [85, 100] }]);
+    const targetsR = M.computeTargets(points, { faceCount, freeCount, metrics, mode: "realistic" });
+    const targetsF = M.computeTargets(points, { faceCount, freeCount, metrics, mode: "formulaic" });
+
+    // Each metric must move TOWARD its ideal band when re-measured on the warped
+    // landmarks. This is the assertion that catches a sign error in any editor.
+    const gap = (val, range) => val < range[0] ? range[0] - val : val > range[1] ? val - range[1] : 0;
+    const afterF = measure(targetsF);
+    for (const b of before) {
+      const a = afterF.find((r) => r.key === b.key);
+      const g0 = gap(b.value, b.range), g1 = gap(a.value, a.range);
+      if (g0 === 0) { note(`${b.key} already inside its ideal band — nothing to correct`); continue; }
+      assert(`formulaic moves ${b.key} toward its ideal`, g1 < g0 - 1e-9,
+        `${b.value.toFixed(3)} → ${a.value.toFixed(3)}, ideal [${b.range}]`);
+    }
+    // …and the formulaic morph should land essentially ON the band.
+    const stillOff = afterF.filter((r) => {
+      const b = before.find((x) => x.key === r.key);
+      return gap(b.value, b.range) > 0 && gap(r.value, r.range) > 0.35 * gap(b.value, b.range);
+    });
+    assert("formulaic drives each metric most of the way to its ideal",
+      stillOff.length === 0, stillOff.map((r) => r.key).join(", "));
+
+    // The realistic morph is the same direction and strictly smaller, bounded by
+    // the improvability figure the report itself quotes. Measured on what was
+    // APPLIED rather than on the re-measured metric, because the metrics are
+    // coupled — FWHR's denominator is the brow-to-lip height, so a big brow lift
+    // moves FWHR on its own — and a coupled metric can legitimately end up
+    // further from its ideal in the mode that corrects harder elsewhere.
+    const afterR = measure(targetsR);
+    for (const b of before) {
+      if (gap(b.value, b.range) === 0) continue;
+      const a = afterR.find((r) => r.key === b.key);
+      assert(`realistic moves ${b.key} toward its ideal too`,
+        gap(a.value, a.range) < gap(b.value, b.range) + 1e-9,
+        `${b.value.toFixed(3)} → ${a.value.toFixed(3)}, ideal [${b.range}]`);
+      assert(`realistic bounds ${b.key} by its improvability`,
+        Math.abs(targetsR.applied[b.key] / targetsF.applied[b.key] - A.improvability(b.key)) < 1e-9,
+        `${(targetsR.applied[b.key] / targetsF.applied[b.key]).toFixed(3)} vs ceiling ${A.improvability(b.key)}`);
+    }
+    const meanShift = (T) => T.slice(0, faceCount)
+      .reduce((s, t, i) => s + Math.hypot(t.x - points[i].x, t.y - points[i].y), 0) / faceCount;
+    assert("the realistic morph moves the face less than the formulaic one",
+      meanShift(targetsR) < meanShift(targetsF),
+      `${meanShift(targetsR).toFixed(2)}px vs ${meanShift(targetsF).toFixed(2)}px`);
+    note(`mean landmark shift — realistic ${meanShift(targetsR).toFixed(2)}px, formulaic ${meanShift(targetsF).toFixed(2)}px`);
+
+    // A face already inside every band must be left alone.
+    const inBand = before.map((b) => ({ ...b, range: [b.value - 1e6, b.value + 1e6] }));
+    const idle = M.computeTargets(points, { faceCount, freeCount, metrics: inBand, mode: "formulaic", symStrength: 0 });
+    assert("a face already at its ideals is not edited",
+      idle.every((t, i) => Math.hypot(t.x - points[i].x, t.y - points[i].y) < 0.01),
+      "something moved with nothing to correct");
+
+    // =======================================================================
+    // The frame stays pinned; the field stays smooth.
+    // =======================================================================
+    head("Warp field");
+    assert("the pinned frame never moves",
+      targetsF.slice(freeCount).every((t, i) =>
+        t.x === points[freeCount + i].x && t.y === points[freeCount + i].y),
+      "the frame moved");
+    // The surround is the point: without tissue between the face and the frame,
+    // a widened jaw was absorbed by a few enormous triangles and smeared.
+    const surroundShift = targetsF.slice(faceCount, freeCount)
+      .map((t, i) => Math.hypot(t.x - points[faceCount + i].x, t.y - points[faceCount + i].y));
+    assert("the surround follows the face it wraps",
+      surroundShift.some((d) => d > 0.5), "the surround ring stayed put");
+    assert("the surround moves less than the face it wraps",
+      Math.max(...surroundShift) < meanShift(targetsF) * 3,
+      `surround max ${Math.max(...surroundShift).toFixed(1)}px`);
+
+    // Folding is measured on the triangles themselves, which is what actually
+    // renders. A per-neighbour strain ratio looked rigorous and was not: it
+    // divides by the gap, so two vertices 1.3px apart differing by 1.3px scored
+    // the same as a genuine tear, when on a 40px global move that difference is
+    // invisible. A triangle that inverts, or that balloons, is the real defect.
+    // Measured over triangles big enough to render. A dense landmark mesh has
+    // genuine sub-pixel slivers where vertices sit a pixel apart — 18 of these
+    // 978 — and one of them collapsing through zero registers as an "inversion"
+    // and a "40× stretch" while moving 0.75px² of texture. Clamping the whole
+    // warp to protect that would weaken a healthy deformation to fix nothing
+    // anyone can see. What must never fold is a triangle that draws.
+    const RENDERABLE = 4;                     // px² — a 2x2 patch, the smallest
+                                              // area that can show an artefact
+    note(`${tris.filter((t) => Math.abs(area(points[t[0]], points[t[1]], points[t[2]])) < RENDERABLE).length}`
+      + ` of ${tris.length} triangles are smaller than a 2x2 patch, excluded below`);
+    // The two modes promise different things, so they are held to different
+    // bounds: the bounded morph must barely distort, while the unbounded one is
+    // allowed to reshape hard — but neither may fold.
+    for (const [label, T, cap] of [["realistic", targetsR, 2.5], ["formulaic", targetsF, 6]]) {
+      let flipped = 0, worstArea = 1;
+      for (const [i, j, k] of tris) {
+        const a0 = area(points[i], points[j], points[k]);
+        if (Math.abs(a0) < RENDERABLE) continue;
+        const a1 = area(T[i], T[j], T[k]);
+        if (Math.sign(a1) !== Math.sign(a0)) flipped++;
+        const ratio = Math.abs(a1) / Math.abs(a0);
+        worstArea = Math.max(worstArea, ratio, 1 / (ratio || 1e-9));
+      }
+      assert(`no renderable ${label} triangle folds over itself`, flipped === 0, `${flipped} inverted`);
+      assert(`no renderable ${label} triangle is distorted beyond its bound`, worstArea < cap,
+        `worst area ratio ${worstArea.toFixed(2)}× (cap ${cap}×)`);
+      note(`${label}: worst renderable area ratio ${worstArea.toFixed(2)}×, ${flipped} inverted`);
+    }
+
+    // Symmetrization, measured on the named anatomical pairs — the asymmetry a
+    // person sees in the mirror, and what the report scores.
+    const PAIRS = [[IDX.eyeROuter, IDX.eyeLOuter], [IDX.eyeRInner, IDX.eyeLInner],
+      [IDX.eyeRTop, IDX.eyeLTop], [IDX.eyeRBottom, IDX.eyeLBottom], [IDX.mouthR, IDX.mouthL],
+      [IDX.browRApex, IDX.browLApex], [IDX.zygoR, IDX.zygoL], [IDX.cheekR, IDX.cheekL],
+      [IDX.gonionR, IDX.gonionL], [IDX.alaR, IDX.alaL]];
+    const midX = FACE.cx * W;
+    const asym = (P) => PAIRS.reduce((s, [a, b]) =>
+      s + Math.hypot(P[a].x - (2 * midX - P[b].x), P[a].y - P[b].y), 0) / PAIRS.length;
+    const symOnly = M.computeTargets(points, { faceCount, freeCount, mode: "formulaic" });
+    const a0 = asym(points), a1 = asym(symOnly);
+    assert("symmetrization reduces asymmetry on the named landmarks", a1 < a0,
+      `before=${a0.toFixed(2)}px after=${a1.toFixed(2)}px`);
+    // Both members of a pair move toward each other, each covering symStrength/2
+    // of its own error, so the gap between them closes by symStrength. Landing
+    // far short means the pairing is guessing: proximity matching alone, before
+    // the topology table went in, managed 6%.
+    const closed = (a0 - a1) / a0;
+    assert("symmetrization closes ~55% of the gap, as symStrength asks",
+      closed > 0.45 && closed < 0.60, `closed ${(closed * 100).toFixed(1)}%`);
+
+    // The iris is a rigid disc: pairing its ring vertices by index across the two
+    // eyes stretched it ±5.8px on a ~10px iris and tore the pupil.
+    for (const [eye, center, ring] of [["right", IDX.irisRCenter, IDX.irisRRing],
+                                       ["left", IDX.irisLCenter, IDX.irisLRing]]) {
+      const all = [center, ...ring];
+      const ddx = all.map((i) => targetsF[i].x - points[i].x);
+      const ddy = all.map((i) => targetsF[i].y - points[i].y);
+      const spread = Math.max(...ddx) - Math.min(...ddx) + Math.max(...ddy) - Math.min(...ddy);
+      assert(`the ${eye} iris translates rigidly, without stretching`, spread < 0.01,
+        `vertices disagree by ${spread.toFixed(2)}px`);
+      const rad = (P) => ring.map((i) => Math.hypot(P[i].x - P[center].x, P[i].y - P[center].y));
+      const r0 = rad(points), r1 = rad(targetsF);
+      assert(`the ${eye} iris keeps its radius`, r1.every((x, i) => Math.abs(x - r0[i]) < 0.01));
+    }
+
+    // =======================================================================
+    // Rendering.
+    // =======================================================================
+    head("Rendering");
+    const mk = (label) => {
+      const c = document.createElement("canvas");
+      c.width = W; c.height = H;
+      const f = document.createElement("figure");
+      f.appendChild(c);
+      f.insertAdjacentHTML("beforeend", `<figcaption>${label}</figcaption>`);
+      strip.appendChild(f);
+      return c;
+    };
+    const data = (c) => c.getContext("2d").getImageData(0, 0, W, H).data;
+    const diff = (Aa, Bb, keep = () => true) => {
+      let s = 0, n2 = 0;
+      for (let i = 0; i < Aa.length; i += 4) {
+        const p = (i / 4) % W, q = Math.floor((i / 4) / W);
+        if (!keep(p, q)) continue;
+        s += Math.abs(Aa[i] - Bb[i]) + Math.abs(Aa[i + 1] - Bb[i + 1]) +
+             Math.abs(Aa[i + 2] - Bb[i + 2]) + Math.abs(Aa[i + 3] - Bb[i + 3]);
+        n2 += 4;
+      }
+      return s / n2;
+    };
+
+    const base = mk("t=0 (real)");
+    M.renderMorph(base.getContext("2d"), img, points, targetsR, tris, 0);
+    const D0 = data(base);
+    const ref = document.createElement("canvas");
+    ref.width = W; ref.height = H;
+    ref.getContext("2d").drawImage(img, 0, 0, W, H);
+    assert("t=0 shows the photo, correctly downscaled", diff(D0, data(ref)) < 1);
+
+    // THE regression: an identity warp must reproduce the photo exactly. Drawing
+    // the source at its natural size while the mesh is in downscaled space makes
+    // every triangle sample a magnified fragment, and the face collapses into a
+    // flat skin-coloured blob.
+    const ident = mk("identity warp (t=1)");
+    M.renderMorph(ident.getContext("2d"), img, points, points.map((p) => ({ ...p })), tris, 1);
+    const dIdent = diff(data(ident), D0);
+    assert("identity warp reproduces the photo (source drawn in landmark space)",
+      dIdent < 6, `mean channel diff ${dIdent.toFixed(2)}/255 — the warp is sampling the wrong scale`);
+
+    const corrR = mk("t=1 realistic");
+    M.renderMorph(corrR.getContext("2d"), img, points, targetsR, tris, 1);
+    const D1 = data(corrR);
+    const corrF = mk("t=1 formulaic");
+    M.renderMorph(corrF.getContext("2d"), img, points, targetsF, tris, 1);
+    const D2 = data(corrF);
+
+    // The pinned frame must hold the photo's edge still.
+    const pad = 4;
+    const edge = (x, y) => x < pad || y < pad || x > W - pad || y > H - pad;
+    // The frame's VERTICES are pinned exactly (asserted above). Its pixels are
+    // still resampled by the triangles reaching in from the surround, which on a
+    // grainy photo shifts values by a hair — a tolerance, not a licence to move.
+    assert("the pinned frame holds the photo's edge still", diff(D2, D0, edge) < 4,
+      `edge changed by ${diff(D2, D0, edge).toFixed(2)}/255`);
+
+    const faceBox = (x, y) => Math.hypot((x - FACE.cx * W) / (FACE.rx * W), (y - FACE.cy * H) / (FACE.ry * H)) < 0.8;
+    const dInR = diff(D1, D0, faceBox), dInF = diff(D2, D0, faceBox);
+    assert("the realistic morph visibly changes the face", dInR > 0.15, `${dInR.toFixed(2)}/255`);
+    assert("the formulaic morph changes it more", dInF > dInR, `${dInF.toFixed(2)} vs ${dInR.toFixed(2)}`);
+    assert("neither morph is a redraw", dInF < 30, `${dInF.toFixed(2)}/255`);
+
+    // A blob has no local contrast left; measure that the features survive.
+    const contrast = (D) => {
+      let s = 0, n2 = 0;
+      const L = (x, y) => { const i = (y * W + x) * 4; return 0.299 * D[i] + 0.587 * D[i + 1] + 0.114 * D[i + 2]; };
+      for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+        if (!faceBox(x, y)) continue;
+        s += Math.abs(4 * L(x, y) - L(x - 1, y) - L(x + 1, y) - L(x, y - 1) - L(x, y + 1)); n2++;
+      }
+      return s / n2;
+    };
+    const c0 = contrast(D0), c2 = contrast(D2);
+    assert("the corrected face keeps its detail (eyes, brows, mouth survive)",
+      c2 > c0 * 0.6, `contrast ${c0.toFixed(2)} → ${c2.toFixed(2)}`);
+
+    // Seam detection. Checking alpha is not enough — the unwarped photo laid
+    // down first fills every gap opaquely, so a torn mesh reads as "no
+    // transparency" while showing a web of bright cracks. What a seam actually
+    // looks like is a one-pixel ridge: a pixel unlike BOTH of its neighbours in
+    // the same direction. Counted against the same measure on the untouched
+    // photo, which has its own edges, so only the warp's additions show up.
+    const ridges = (D) => {
+      let n2 = 0;
+      const L = (x, y) => { const i = (y * W + x) * 4; return 0.299 * D[i] + 0.587 * D[i + 1] + 0.114 * D[i + 2]; };
+      for (let y = 2; y < H - 2; y++) for (let x = 2; x < W - 2; x++) {
+        if (!faceBox(x, y)) continue;
+        const c = L(x, y);
+        const dxL = c - L(x - 1, y), dxR = c - L(x + 1, y);
+        const dyU = c - L(x, y - 1), dyD = c - L(x, y + 1);
+        if ((Math.abs(dxL) > 10 && Math.abs(dxR) > 10 && Math.sign(dxL) === Math.sign(dxR)) ||
+            (Math.abs(dyU) > 10 && Math.abs(dyD) > 10 && Math.sign(dyU) === Math.sign(dyD))) n2++;
+      }
+      return n2;
+    };
+    // On the hard-edged version, where a seam has nowhere to hide. (On the grainy
+    // one this measures the grain, and the warp's own resampling smooths it, so
+    // a torn mesh would score BETTER than the source — useless as a probe.)
+    const sharpCanvas = document.createElement("canvas");
+    sharpCanvas.width = W; sharpCanvas.height = H;
+    const sctx = sharpCanvas.getContext("2d");
+    sctx.drawImage(imgSharp, 0, 0, W, H);
+    const sBase = ridges(sctx.getImageData(0, 0, W, H).data);
+    M.renderMorph(sctx, imgSharp, points, targetsF, tris, 1);
+    const sWarp = ridges(sctx.getImageData(0, 0, W, H).data);
+    assert("the warp adds no hairline seams along the triangle edges",
+      sWarp < sBase * 1.6 + 40, `${sBase} one-pixel ridges before, ${sWarp} after`);
+    note(`one-pixel ridges on the hard-edged fixture: ${sBase} before, ${sWarp} after the formulaic warp`);
+
+    const half = mk("t=0.5 formulaic");
+    M.renderMorph(half.getContext("2d"), img, points, targetsF, tris, 0.5);
+    const Dh = data(half);
+    assert("mid-slider blends between the ends",
+      diff(Dh, D0, faceBox) < dInF && diff(Dh, D2, faceBox) < dInF,
+      `to-real ${diff(Dh, D0, faceBox).toFixed(2)}, to-corrected ${diff(Dh, D2, faceBox).toFixed(2)}`);
+
+    // Re-rendering the same position must not shimmer. Tolerance, not equality:
+    // clip-path rasterisation is not bit-exact between invocations, and the
+    // discrepancy scales with how much the texture varies across a pixel —
+    // 0.03/255 on flat colour, ~2/255 once grain is added. Well under one
+    // channel step either way, so it cannot shimmer on screen.
+    M.renderMorph(corrF.getContext("2d"), img, points, targetsF, tris, 1);
+    const dRepeat = diff(data(corrF), D2);
+    assert("re-rendering the same position is stable", dRepeat < 3, `${dRepeat.toFixed(4)}/255`);
+
+    const t0 = performance.now();
+    for (let k = 0; k < 10; k++) M.renderMorph(corrF.getContext("2d"), img, points, targetsF, tris, 0.4 + k * 0.02);
+    const ms = (performance.now() - t0) / 10;
+    assert("a frame renders in well under a slider tick", ms < 32, `${ms.toFixed(1)}ms/frame`);
+    const tt = performance.now();
+    M.computeTargets(points, { faceCount, freeCount, metrics, mode: "formulaic" });
+    const solveMs = performance.now() - tt;
+    assert("switching morph mode resolves quickly", solveMs < 400, `${solveMs.toFixed(0)}ms`);
+    note(`${tris.length} triangles · ${ms.toFixed(1)}ms/frame · ${solveMs.toFixed(0)}ms to solve targets · ${W}x${H}`);
+    M.renderMorph(corrF.getContext("2d"), img, points, targetsF, tris, 1);
+
+    document.getElementById("sum").innerHTML =
+      `<b class="${fail ? "fail" : "pass"}">${pass} passed, ${fail} failed.</b>`;
+    console.log(`Morph self-check: ${pass} passed, ${fail} failed.`);
+    // Exposed for probing from the console when an assertion above goes red.
+    window.__morphCheck = { pass, fail, points, targetsR, targetsF, tris, faceCount, W, H, IDX, FACE, before, afterF, afterR };
+  </script>
+</body>
+</html>
