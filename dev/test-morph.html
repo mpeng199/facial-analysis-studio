@@ -317,7 +317,10 @@
       off.length >= 5, `${off.length} of ${before.length} outside their ideal band`);
     note(before.map((r) => `${r.key} ${r.value.toFixed(2)} [${r.range}]`).join("  ·  "));
 
-    const metrics = before.concat([{ key: "thirds", value: 50, range: [85, 100] }]);
+    const metrics = before.concat([
+      { key: "thirds", value: 50, range: [85, 100] },
+      { key: "fifths", value: 50, range: [85, 100] },
+    ]);
     const targetsR = M.computeTargets(points, { faceCount, freeCount, metrics, mode: "realistic" });
     const targetsF = M.computeTargets(points, { faceCount, freeCount, metrics, mode: "formulaic" });
 
@@ -364,6 +367,34 @@
       `${meanShift(targetsR).toFixed(2)}px vs ${meanShift(targetsF).toFixed(2)}px`);
     note(`mean landmark shift — realistic ${meanShift(targetsR).toFixed(2)}px, formulaic ${meanShift(targetsF).toFixed(2)}px`);
 
+    // The two classical balance rules. Equal thirds and equal fifths are the
+    // whole claim, so the geometry is checked directly rather than trusting
+    // that the bumps landed where they were asked to.
+    const bands = (P) => [
+      Math.abs(P[IDX.zygoR].x - P[IDX.eyeROuter].x),
+      Math.abs(P[IDX.eyeROuter].x - P[IDX.eyeRInner].x),
+      Math.abs(P[IDX.eyeRInner].x - P[IDX.eyeLInner].x),
+      Math.abs(P[IDX.eyeLInner].x - P[IDX.eyeLOuter].x),
+      Math.abs(P[IDX.eyeLOuter].x - P[IDX.zygoL].x),
+    ];
+    const thirdsOf = (P) => [
+      Math.abs(P[IDX.glabella].y - P[IDX.foreheadTop].y),
+      Math.abs(P[IDX.subnasale].y - P[IDX.glabella].y),
+      Math.abs(P[IDX.menton].y - P[IDX.subnasale].y),
+    ];
+    const spread = (a) => {
+      const m = a.reduce((s, x) => s + x, 0) / a.length;
+      return Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / a.length) / (m || 1);
+    };
+    for (const [label, of] of [["fifths", bands], ["thirds", thirdsOf]]) {
+      const c0 = spread(of(points)), cF = spread(of(targetsF)), cR = spread(of(targetsR));
+      assert(`formulaic evens the ${label}`, cF < c0 * 0.4,
+        `spread ${(c0 * 100).toFixed(1)}% → ${(cF * 100).toFixed(1)}%`);
+      assert(`realistic evens the ${label} a little, not a lot`, cR < c0 && cR > cF,
+        `spread ${(c0 * 100).toFixed(1)}% → ${(cR * 100).toFixed(1)}%, formulaic ${(cF * 100).toFixed(1)}%`);
+      note(`${label} spread — real ${(c0 * 100).toFixed(1)}%, realistic ${(cR * 100).toFixed(1)}%, formulaic ${(cF * 100).toFixed(1)}%`);
+    }
+
     // A face already inside every band must be left alone.
     const inBand = before.map((b) => ({ ...b, range: [b.value - 1e6, b.value + 1e6] }));
     const idle = M.computeTargets(points, { faceCount, freeCount, metrics: inBand, mode: "formulaic", symStrength: 0 });
@@ -407,7 +438,7 @@
     // The two modes promise different things, so they are held to different
     // bounds: the bounded morph must barely distort, while the unbounded one is
     // allowed to reshape hard — but neither may fold.
-    for (const [label, T, cap] of [["realistic", targetsR, 2.5], ["formulaic", targetsF, 6]]) {
+    for (const [label, T, cap] of [["realistic", targetsR, 2.5], ["formulaic", targetsF, 3.5]]) {
       let flipped = 0, worstArea = 1;
       for (const [i, j, k] of tris) {
         const a0 = area(points[i], points[j], points[k]);

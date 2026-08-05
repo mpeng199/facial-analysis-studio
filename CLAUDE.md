@@ -78,7 +78,7 @@ Self-checks for the hand-built geometry in `landing.js`: the chamfered unit box
 dimensions). `test.html` is the 26-assert analysis-engine suite (open it in a
 browser; needs no camera).
 
-`dev/test-morph.html` is the corrected-face morph's suite (55 asserts). Open it
+`dev/test-morph.html` is the corrected-face morph's suite (59 asserts). Open it
 in a browser; needs no camera. It builds a synthetic face at phone resolution,
 downscales it exactly as `app.js` does, and runs the real
 `buildWarpMesh`/`computeTargets`/`renderMorph`. **Every ideal-driven edit is
@@ -89,13 +89,22 @@ the warped landmarks**, so a sign error in any editor fails here.
 
 ## The corrected-face morph
 
-Built to QOVES' described pipeline. `morph.js`:
+**It warps the user's own uploaded photo.** `setupMorph` passes
+`state.front.img` — the `Image` from `fileToImage()` — straight to
+`renderMorph`. Nothing is generated. The cartoon face lives only in
+`dev/test-morph.html`, because reaching the real one needs a camera.
+
+Built to QOVES' described pipeline (see "What QOVES actually does" below).
+`morph.js`:
 
 1. **Measured, not filtered.** Each frontal metric's distance to its ideal band
-   (`analysis.js` `METRICS[].ideal`) becomes a geometric edit on the landmarks
-   that define it — canthal tilt, lid aperture (scleral show), brow height, nose
-   and mouth width, lip fullness, bigonial width, FWHR, vertical thirds → 1:1:1
-   — plus a midline symmetrization. `EDITS` holds one editor per metric.
+   (`analysis.js` `METRICS[].ideal`, shifted for sex and ethnicity by
+   `idealFor`) becomes a geometric edit on the landmarks that define it —
+   canthal tilt, lid aperture (scleral show), brow height, nose and mouth width,
+   lip fullness, bigonial width, FWHR — plus the two classical balance rules
+   and a midline symmetrization. `EDITS` holds one editor per metric.
+   Because a soft bump always lands short, each edit is **re-measured through
+   the metric's own `compute()`** and the residual corrected over several rounds.
 2. **Two morphs.** `realistic` scales every edit by `improvability(key)` — the
    same table driving the report's improvement ceilings, so the picture can
    never promise more than the protocol. `formulaic` drives everything to the
@@ -104,7 +113,7 @@ Built to QOVES' described pipeline. `morph.js`:
    pinned frame. Without the middle band a widened jaw was absorbed by a few
    enormous triangles and the surroundings smeared.
 
-Four things that are load-bearing, each of which was a visible bug:
+Five things that are load-bearing, each of which was a visible bug:
 
 - **`renderMorph` must draw the source into the `(0,0,W,H)` box**, never
   `drawImage(image, 0, 0)`. Landmarks live in the ≤`MAX_SIDE` canvas space while
@@ -120,10 +129,38 @@ Four things that are load-bearing, each of which was a visible bug:
 - **Edit falloff radius is sized to the feature** (`span`), never a fixed value.
   A bump wide enough to reach the landmark the metric is measured *against*
   moves both ends and changes nothing.
+- **`RULES` are solved inside a moving frame.** Thirds and fifths are positions
+  as a *fraction of the span between two anchors*, re-read every round — never
+  absolute coordinates. The FWHR edit moves the zygomatic points, so fifths
+  pinned to the original temples stop being fifths the moment it lands: a 6.6%
+  band spread came back at 20%. Frame-relative, the same input lands at 1.6%,
+  and it made the whole warp better conditioned (worst triangle distortion fell
+  from 7.1× to 2.7×). They are also under-relaxed (`GEO_STEP`) because the goals
+  are solved together while each bump still nudges the others.
 
 The iris is translated rigidly with its eye — its ring vertices are ordered
 around the circle, so index *k* is the same angle on **both** eyes and pairing
 them by index tears the pupil.
+
+### What QOVES actually does
+
+From their own copy and published method (researched 2026-08-05), and what of it
+this repo can and cannot match:
+
+| QOVES | here |
+| --- | --- |
+| 521 landmarks | 478 — MediaPipe's ceiling, not a choice |
+| 160+ tests across 11 regions, incl. 20 skin tests | ~20 geometric metrics; no skin model |
+| "Ethnicity-aware… rejecting one-size-fits-all" | `ETHNIC_SHIFT` in `idealFor`, and the morph reads those shifted ranges |
+| Population ranges, *not* the Marquardt mask as a target | `METRICS[].ideal` are ranges with a `tol` decay |
+| Thirds 1:1:1; fifths = 5 eye widths; intercanthal = 1 eye width; mouth = 1.5 × nose | `RULES` (thirds, fifths) and `mouthNose` |
+| "Realistic previews… achievable without surgery" | `realistic`, bounded by `improvability` |
+| Morph shown against the protocol | same table drives both |
+| Human review before delivery | not reproducible in a static site |
+
+The critique to keep in mind, from a review of their reports: a morph
+"optimized for a geometry target shows a face no haircut produces". That is
+exactly what `formulaic` is, and why `realistic` is the default.
 
 `dev/_audit.js` is the dev-only geometry auditor — **not** referenced by any
 page, and 404'd in `netlify.toml`. It is the regression harness for the

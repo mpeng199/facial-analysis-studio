@@ -290,19 +290,35 @@ export const EDITS = {
   },
 };
 
-// The vertical thirds, pulled toward 1:1:1 — QOVES' "compress or expand the
-// midface". Driven straight off the geometry rather than off a metric value,
-// because the report scores the thirds as a 0–100 balance which cannot be
-// inverted back into a distance. Hairline and chin are held; the two interior
-// boundaries move to the equal split between them.
-function editThirds(P, bump, S) {
-  const yF = P[IDX.foreheadTop].y, yM = P[IDX.menton].y;
-  const total = yM - yF;
-  if (!(total > 0)) return;
-  const third = total / 3, r = S.halfW * 0.55;
-  bump(IDX.glabella, 0, (yF + third) - P[IDX.glabella].y, r);
-  bump(IDX.subnasale, 0, (yF + 2 * third) - P[IDX.subnasale].y, r);
-}
+// The two classical balance rules. Both are driven straight off the geometry
+// rather than off a metric value, because the report scores them as 0–100
+// balances which cannot be inverted back into a distance — so each returns
+// where its landmarks WANT to be, and the solver walks them there.
+
+// Each rule is a set of interior vertices that should sit at even fractions of
+// the span between two anchors:
+//
+//   thirds — hairline to chin, split 1:1:1 by glabella and subnasale. QOVES'
+//     "compress or expand the midface to bring the forehead, nose and chin into
+//     a balanced ratio".
+//   fifths — "the total bizygomatic width of the face should equal five eye
+//     widths": one at each temple, one per eye, one between them. That last is
+//     the same statement as intercanthal distance = one eye width, so this is
+//     the only lever on eye spacing and `intercanthalRatio` deliberately has no
+//     editor of its own rather than fight this one over the same four vertices.
+//
+// Both are solved as a position WITHIN their frame rather than as an absolute
+// coordinate, because the frame moves: the FWHR edit widens the face by scaling
+// the zygomatic points, and fifths pinned to the original temples stop being
+// fifths the moment it lands. Measured that way, a 6.6% band spread came back
+// at 20%. Anchors are re-read every round instead.
+const RULES = [
+  { key: "thirds", axis: "y", anchors: [IDX.foreheadTop, IDX.menton],
+    verts: [[IDX.glabella, 1 / 3], [IDX.subnasale, 2 / 3]] },
+  { key: "fifths", axis: "x", anchors: [IDX.zygoR, IDX.zygoL],
+    verts: [[IDX.eyeROuter, 1 / 5], [IDX.eyeRInner, 2 / 5],
+            [IDX.eyeLInner, 3 / 5], [IDX.eyeLOuter, 4 / 5]] },
+];
 
 // Re-measure one metric on a warped landmark set, using the same compute() the
 // report scores with — so the loop below is closing on the real number and not
@@ -486,9 +502,35 @@ export function computeTargets(pts, opts = {}) {
       goals.push({ key: m.key, from: m.value, goal: m.value + need * gain });
     }
   }
-  const doThirds = !!metrics && metrics.some((m) => m.key === "thirds");
-  const thirdsGain = mode === "formulaic" ? 1 : improvability("thirds");
-  if (doThirds) applied.thirds = thirdsGain;
+  // The balance rules become per-vertex goals, fixed once from the original
+  // geometry so the mode's bound is applied to the whole correction and not
+  // re-applied on every round of the solve below.
+  // The falloff must be small next to the SPACING of the goals it drives, not
+  // just next to the feature. The five fifths sit about one band apart, so a
+  // bump half a band wide moves its neighbours almost as much as its own vertex
+  // — four goals each undoing the others, which diverged outright (a 6.6% band
+  // spread came back as 24.3%) rather than converging.
+  const bandW = Math.abs(pts[IDX.zygoL].x - pts[IDX.zygoR].x) / 5 || eyeW;
+  const rules = [];
+  for (const R of RULES) {
+    if (!metrics || !metrics.some((m) => m.key === R.key)) continue;
+    const gain = mode === "formulaic" ? 1 : improvability(R.key);
+    if (!(gain > 0)) continue;
+    const at = (i) => (R.axis === "x" ? pts[i].x : pts[i].y);
+    const a0 = at(R.anchors[0]), span0 = at(R.anchors[1]) - a0;
+    if (!(Math.abs(span0) > 1e-6)) continue;
+    rules.push({
+      ...R,
+      r: R.key === "fifths" ? bandW * 0.3 : halfW * 0.55,
+      // where each vertex should end up, as a fraction of the span: its own
+      // starting fraction, moved `gain` of the way to the even split
+      want: R.verts.map(([i, even]) => {
+        const u = (at(i) - a0) / span0;
+        return [i, u + gain * (even - u)];
+      }),
+    });
+    applied[R.key] = gain;
+  }
 
   // Open loop lands short. A bump sized to its own feature still carries the
   // landmark the metric is measured against a little way, and the smoothing
@@ -498,11 +540,11 @@ export function computeTargets(pts, opts = {}) {
   // the band, and the loop is cheap: the expensive passes above run once.
   const ex = new Float64Array(total), ey = new Float64Array(total);
   const cx2 = new Float64Array(total), cy2 = new Float64Array(total);
-  const ROUNDS = goals.length ? 3 : 1;
+  const GEO_STEP = 0.6;
+  const ROUNDS = rules.length ? 6 : (goals.length ? 3 : 1);
   for (let round = 0; round < ROUNDS; round++) {
     if (round === 0) {
       for (const g of goals) EDITS[g.key](pts, g.goal - g.from, bumpInto(ex, ey), g.from, S);
-      if (doThirds) editThirds(pts, (i, ax, ay, r) => bumpInto(ex, ey)(i, ax * thirdsGain, ay * thirdsGain, r), S);
     } else {
       // measure where the last round actually landed, then correct the residual
       const F = pts.map((p, i) => ({ x: p.x + dx[i] + ex[i], y: p.y + dy[i] + ey[i], z: 0 }));
@@ -512,6 +554,21 @@ export function computeTargets(pts, opts = {}) {
         const residual = g.goal - cur;
         if (Math.abs(residual) < Math.abs(g.goal - g.from) * 1e-3) continue;
         EDITS[g.key](pts, residual, bumpInto(ex, ey), cur, S);
+      }
+    }
+    // The balance rules walk to their goals every round: read where the vertex
+    // actually sits now and bump by a fraction of what is left. Under-relaxed
+    // because the goals are solved together while each one's bump still moves
+    // the others a little — correcting the full residual on every vertex at
+    // once overshoots and oscillates. GEO_STEP trades rounds for stability.
+    for (const R of rules) {
+      const cur = (i) => (R.axis === "x" ? pts[i].x + dx[i] + ex[i] : pts[i].y + dy[i] + ey[i]);
+      const a = cur(R.anchors[0]), span = cur(R.anchors[1]) - a;
+      if (!(Math.abs(span) > 1e-6)) continue;
+      for (const [i, u] of R.want) {
+        const left = (a + span * u - cur(i)) * GEO_STEP;
+        if (R.axis === "x") bumpInto(ex, ey)(i, left, 0, R.r);
+        else bumpInto(ex, ey)(i, 0, left, R.r);
       }
     }
     for (let i = 0; i < moving; i++) { cx2[i] = dx[i] + ex[i]; cy2[i] = dy[i] + ey[i]; }
