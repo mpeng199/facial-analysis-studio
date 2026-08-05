@@ -406,7 +406,7 @@ function setupMorph(R) {
   // tissue to stretch into instead of tearing against a static background.
   const { points, tris, faceCount, freeCount } = buildWarpMesh(src.pxPts, src.w, src.h);
   const frontal = R.results.filter((r) => r.side !== "profile");
-  const targetsFor = (mode) => computeTargets(points, { faceCount, freeCount, metrics: frontal, mode });
+  const targetsFor = (mode) => computeTargets(points, { faceCount, freeCount, metrics: frontal, mode, pose: R.pose });
   morphCache = { ctx, img: src.img, points, tris, targetsFor, targets: targetsFor("realistic") };
 
   const slider = $("morphSlider");
@@ -430,6 +430,17 @@ function setupMorph(R) {
       $("morphModeNote").textContent = MORPH_NOTE[e.target.value];
       draw();
     });
+  }
+
+  // Every ideal range describes a face seen straight on. Turn the head and a
+  // width reads shorter than it is, so the morph holds back — and says so,
+  // rather than quietly showing a correction aimed at the wrong number.
+  const trust = morphCache.targets.applied?.poseTrust ?? 1;
+  if (trust < 0.97) {
+    $("morphPoseNote").textContent =
+      `Your head is turned about ${Math.round(Math.abs(R.pose.yaw))}° and tilted ${Math.round(Math.abs(R.pose.pitch))}°, `
+      + `so the measurements below are read off a foreshortened view. The morph is scaled to `
+      + `${Math.round(trust * 100)}% to match how much of it can be trusted at that angle — a straight-on photo gives a truer preview.`;
   }
 }
 const MORPH_NOTE = {

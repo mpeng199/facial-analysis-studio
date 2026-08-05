@@ -5,9 +5,12 @@
 //   1. Vector mapping and landmark alignment. The mesh is measured against the
 //      ideal ranges in analysis.js — the same numbers the report scores — and
 //      each shortfall becomes a geometric edit on the landmarks that define it:
-//      canthal tilt, eyelid aperture (scleral show), brow height, nose and
-//      mouth width, lip fullness, bigonial width, FWHR, and the vertical thirds
-//      pulled toward 1:1:1. Plus a soft midline symmetrization.
+//      canthal tilt, eyelid aperture (scleral show), nose and mouth width, lip
+//      fullness, bigonial width and FWHR, plus the two classical balance rules
+//      (thirds 1:1:1, fifths) and a soft midline symmetrization. Every edit is
+//      then re-measured through the metric's own compute() and the residual
+//      corrected — but only while that is still closing the gap, because some
+//      metrics cannot be moved by a smooth warp at all (see EDITS).
 //   2. Spline warp with the surroundings locked. The triangulated warp runs over
 //      the face mesh PLUS a pinned frame of border vertices, so a jawline can be
 //      pulled tighter and the stretch is absorbed in the tissue around it
@@ -177,6 +180,9 @@ const MIRROR = (() => {
 
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
+// The metric compute() functions want {x,y,z}; the mesh is flat 2D pixels.
+const asWorking = (P) => P.map((p) => ({ x: p.x, y: p.y, z: 0 }));
+
 // Falloff radius for an edit, from the size of the thing being edited.
 //
 // This is the rule that makes the edits actually land. Every metric is a ratio
@@ -202,11 +208,27 @@ const span = (featureSize, S) => Math.max(S.eyeW * 0.12, featureSize * 0.5);
 // slightly off once the first has moved; at these magnitudes that is far below
 // what the warp can show.
 //
-// Deliberately absent: philtrum length and lower-third height, whose only lever
-// is the same vertex the lip and thirds editors already own, and the profile
-// metrics (chin projection, gonial angle, E-line) — a frontal photo cannot show
-// a change in depth, and pretending otherwise would be the one thing this
-// preview must not do.
+// Deliberately absent:
+//
+//   browPosition — the one that had to be taken back out. It is measured as the
+//     distance from the brow to the eyelid a few pixels below it, and no smooth
+//     falloff can move one without the other: narrow enough to separate them and
+//     the brow tears away from the lid as a hard bar; wide enough to look right
+//     and the lid rides along so the ratio never changes. The solver then reads
+//     an unmoved metric, asks again, and again — on a real photo that produced
+//     black slabs for eyebrows and a torn eye line. It also carries the highest
+//     improvability in the table (0.7), so it dominated the realistic morph on
+//     the way through. The report still scores it and the protocol still
+//     recommends brow work, which is grooming and microblading — changes to how
+//     a brow READS, not to where the bone sits. A geometric warp is the wrong
+//     instrument for it, and the honest move is to not draw it.
+//
+//   philtrum length and lower-third height, whose only lever is the same vertex
+//     the lip and thirds editors already own.
+//
+//   the profile metrics (chin projection, gonial angle, E-line) — a frontal
+//     photo cannot show a change in depth, and pretending otherwise would be
+//     the one thing this preview must not do.
 // Each receives (positions, scaled shortfall, bump, current value, scale hints)
 // and calls bump(index, dx, dy, falloffRadius).
 export const EDITS = {
@@ -232,16 +254,6 @@ export const EDITS = {
       bump(top, 0, (midY + (P[top].y - midY) * f) - P[top].y, r);
       bump(bot, 0, (midY + (P[bot].y - midY) * f) - P[bot].y, r);
     }
-  },
-  // ---- brows ----
-  // Height is measured in eye-widths above the lid, so δ eye-widths of lift.
-  browPosition(P, need, bump, cur, S) {
-    const dy = -need * S.eyeW;
-    const gap = (Math.abs(P[IDX.browRApex].y - P[IDX.eyeRTop].y) +
-                 Math.abs(P[IDX.browLApex].y - P[IDX.eyeLTop].y)) / 2;
-    const r = span(gap, S);
-    for (const i of [IDX.browRApex, IDX.browRInner, IDX.browRTail,
-                     IDX.browLApex, IDX.browLInner, IDX.browLTail]) bump(i, 0, dy, r);
   },
   // ---- nose ----
   noseWidth(P, need, bump, cur, S) {
@@ -368,6 +380,7 @@ export function computeTargets(pts, opts = {}) {
     metrics = null,
     mode = "realistic",
     symStrength = 0.55,
+    pose = null,
   } = opts;
   const total = pts.length;
   const n = Math.min(faceCount, total);          // landmarks: driven
@@ -454,9 +467,24 @@ export function computeTargets(pts, opts = {}) {
   const S = { eyeW, halfW };
   // Bump into a given field, so the edit layer can be rebuilt independently of
   // the symmetry layer underneath it.
+  // A bump can only ever be as strong as its own falloff allows. A Gaussian of
+  // amplitude A and radius r peaks at a slope of about 0.61·A/r, so once A
+  // approaches r the surface folds and the texture tears — which is what turned
+  // a brow lift into a black bar. The radius is widened to hold the slope down,
+  // so a large correction is always spread over proportionally more tissue.
+  // Ceiling on a single edit. The arithmetic can ask for anything — a brow
+  // three eye-widths above the lid is a number the ratio will happily produce —
+  // and a morph that answers by moving a landmark most of a face-width is not
+  // wrong so much as meaningless. Nothing a soft-tissue protocol does moves a
+  // feature this far, so neither does the picture.
+  const maxBump = halfW * (mode === "formulaic" ? 0.22 : 0.10);
   const bumpInto = (fx, fy) => (i, ax, ay, radius) => {
-    if (i == null || i >= n || (!ax && !ay) || !(radius > 0)) return;
-    const twoSig = 2 * radius * radius;
+    if (i == null || i >= n || (!ax && !ay)) return;
+    const amp = Math.hypot(ax, ay);
+    if (amp > maxBump) { const s = maxBump / amp; ax *= s; ay *= s; }
+    const radius2 = Math.max(radius || 0, Math.min(amp, maxBump) * 2);
+    if (!(radius2 > 0)) return;
+    const twoSig = 2 * radius2 * radius2;
     const o = pts[i];
     for (let k = 0; k < moving; k++) {
       const d2 = (pts[k].x - o.x) ** 2 + (pts[k].y - o.y) ** 2;
@@ -489,17 +517,41 @@ export function computeTargets(pts, opts = {}) {
   };
 
   // Which metrics are in play, and the value each one is being driven to.
-  const applied = {};
+  // How much of the correction to trust at this head angle. Every ideal range
+  // describes a face seen straight on, and every edit here is a 2D move in the
+  // photo's plane. Turn the head and the two stop corresponding: a width read
+  // off a yawed face is foreshortened, so correcting it toward a frontal ideal
+  // aims at the wrong number. The morph does not pretend otherwise — it scales
+  // back as the pose leaves frontal, and says so in the report.
+  const poseTrust = Math.max(0.15, Math.cos((pose?.yaw || 0) * Math.PI / 180) *
+                                   Math.cos((pose?.pitch || 0) * Math.PI / 180));
+
+  const applied = { poseTrust };
   const goals = [];
   if (metrics) {
     for (const m of metrics) {
       if (!EDITS[m.key]) continue;
-      const need = shortfall(m.value, m.range);
-      if (!need) continue;
+      const need = shortfall(m.value, m.range) * poseTrust;
       const gain = mode === "formulaic" ? 1 : improvability(m.key);
       if (!(gain > 0)) continue;
+      // A metric already inside its band still gets a goal — to HOLD it. The
+      // edits share landmarks, so correcting one drags others: the fifths rule
+      // slides the canthi sideways, which tilts them, and a canthal tilt that
+      // was already ideal came out of the morph worse than it went in. Holding
+      // the satisfied ones lets the solver undo its own collateral damage.
       applied[m.key] = need * gain;                    // the intent, recorded once
-      goals.push({ key: m.key, from: m.value, goal: m.value + need * gain });
+      // The goal is anchored to the value measured HERE, in the mesh's own
+      // pixel frame, not to the report's figure. The report measures on
+      // pose-normalized landmarks — a different frame — so only the *delta*
+      // carries over; adopting its absolute value leaves the solver chasing an
+      // offset it can never close.
+      const here = measureMetric(m.key, asWorking(pts));
+      if (here == null) continue;
+      const move = need * gain;
+      goals.push({ key: m.key, from: here, goal: here + move, hold: !move,
+        // a hold needs a tolerance to work against, or it chases rounding
+        want: Math.abs(move) || Math.abs(here) * 0.02 || 0.02,
+        prev: Infinity, spent: 0, done: false });
     }
   }
   // The balance rules become per-vertex goals, fixed once from the original
@@ -540,23 +592,41 @@ export function computeTargets(pts, opts = {}) {
   // the band, and the loop is cheap: the expensive passes above run once.
   const ex = new Float64Array(total), ey = new Float64Array(total);
   const cx2 = new Float64Array(total), cy2 = new Float64Array(total);
-  const GEO_STEP = 0.6;
+  const GEO_STEP = 0.6, METRIC_STEP = 0.7;
   const ROUNDS = rules.length ? 6 : (goals.length ? 3 : 1);
-  for (let round = 0; round < ROUNDS; round++) {
-    if (round === 0) {
-      for (const g of goals) EDITS[g.key](pts, g.goal - g.from, bumpInto(ex, ey), g.from, S);
-    } else {
-      // measure where the last round actually landed, then correct the residual
-      const F = pts.map((p, i) => ({ x: p.x + dx[i] + ex[i], y: p.y + dy[i] + ey[i], z: 0 }));
-      for (const g of goals) {
-        const cur = measureMetric(g.key, F);
-        if (cur == null) continue;
-        const residual = g.goal - cur;
-        if (Math.abs(residual) < Math.abs(g.goal - g.from) * 1e-3) continue;
-        EDITS[g.key](pts, residual, bumpInto(ex, ey), cur, S);
-      }
+
+  // Measure where the field currently stands and correct each metric toward its
+  // goal — but only while that is still making progress.
+  //
+  // Not every metric CAN be satisfied by a smooth warp. Brow height was the
+  // clearest case and had to be dropped entirely. Left unbounded the solver
+  // reads the same residual every round and keeps piling displacement on, and
+  // six rounds of that turns a modest correction into a caricature. Two brakes:
+  // stop when a round stops closing the gap, and never spend more than twice
+  // the correction originally asked for. An edit the face will not accept is
+  // left partly done, which is the honest outcome.
+  const correctMetrics = () => {
+    const F = pts.map((p, i) => ({ x: p.x + dx[i] + ex[i], y: p.y + dy[i] + ey[i], z: 0 }));
+    for (const g of goals) {
+      if (g.done) continue;
+      const cur = measureMetric(g.key, F);
+      if (cur == null) { g.done = true; continue; }
+      const residual = Math.abs(g.goal - cur);
+      if (residual < g.want * 1e-3) { g.done = true; continue; }
+      if (residual > g.prev * 0.98 || g.spent > g.want * 2) { g.done = true; continue; }
+      g.prev = residual;
+      g.spent += residual;
+      EDITS[g.key](pts, (g.goal - cur) * METRIC_STEP, bumpInto(ex, ey), cur, S);
     }
-    // The balance rules walk to their goals every round: read where the vertex
+  };
+  for (let round = 0; round < ROUNDS; round++) {
+    // The balance rules go FIRST, so the metric pass below always gets the
+    // last word. Run the other way round, the fifths rule slides the canthi
+    // sideways after the tilt has been corrected — and since tilt is rise over
+    // run, narrowing the run re-tilts the eye with nothing left to fix it.
+    // Measured on a real face that ran canthal tilt from -1.3 to +12.7,
+    // straight through its ideal band and out the far side.
+    // They walk to their goals every round: read where the vertex
     // actually sits now and bump by a fraction of what is left. Under-relaxed
     // because the goals are solved together while each one's bump still moves
     // the others a little — correcting the full residual on every vertex at
@@ -571,11 +641,61 @@ export function computeTargets(pts, opts = {}) {
         else bumpInto(ex, ey)(i, 0, left, R.r);
       }
     }
+    {
+      // Measure where the last round actually landed, then correct what is
+      // left — but only while that is still making progress.
+      //
+      // Not every metric CAN be satisfied by a smooth warp. Brow height is the
+      // distance from the brow to the eyelid a few pixels below it; any falloff
+      // wide enough to move the brow smoothly also carries the lid, so the ratio
+      // barely shifts. Left unbounded the solver reads the same residual every
+      // round and keeps piling displacement on, and six rounds of that turns a
+      // modest correction into a caricature — heavy black brows, torn eyes.
+      // Two brakes: stop when a round stops closing the gap, and never spend
+      // more than twice the correction originally asked for. An edit the face
+      // will not accept is left partly done, which is the honest outcome.
+      correctMetrics();
+    }
+    // Smooth the whole field, symmetry layer included. Smoothing only the edit
+    // layer preserves more of the symmetry correction (55% delivered rather
+    // than 37%) but leaves the two layers free to disagree across a shared
+    // edge, and the worst formulaic triangle went from 2.4x to 7.1x. Clean
+    // geometry is worth more than the last third of a subtle correction.
     for (let i = 0; i < moving; i++) { cx2[i] = dx[i] + ex[i]; cy2[i] = dy[i] + ey[i]; }
     smoothInto(cx2, cy2, cx2, cy2);
-    // the measurement above wants the smoothed field, so fold it back in
     for (let i = 0; i < moving; i++) { ex[i] = cx2[i] - dx[i]; ey[i] = cy2[i] - dy[i]; }
   }
+  // The rules and the metric edits share landmarks, so whichever moves last
+  // wins. Once the balance rules have settled, give the metrics the final say:
+  // two more passes correcting them alone, with the progress guards re-armed.
+  // Without this the fifths rule's last sweep left canthal tilt on a real face
+  // 10° past the far side of its ideal band — the metric had long since given
+  // up, correctly, because something else was undoing it faster than it could
+  // close the gap.
+  for (const g of goals) { g.done = false; g.prev = Infinity; g.spent = 0; }
+  for (let round = 0; round < 2; round++) {
+    correctMetrics();
+    for (let i = 0; i < moving; i++) { cx2[i] = dx[i] + ex[i]; cy2[i] = dy[i] + ey[i]; }
+    smoothInto(cx2, cy2, cx2, cy2);
+    for (let i = 0; i < moving; i++) { ex[i] = cx2[i] - dx[i]; ey[i] = cy2[i] - dy[i]; }
+  }
+
+  // Last backstop, applied to the edit layer as a whole. Everything above is a
+  // local guard; this one is the guarantee. If the accumulated edits have moved
+  // any landmark further than a face can plausibly go, the entire edit field is
+  // scaled down uniformly — which preserves its shape and smoothness rather
+  // than clipping individual vertices into a crease. Reaching this means some
+  // metric asked for more than a warp can honestly deliver, and the picture
+  // shows the direction instead of the arithmetic.
+  const maxShift = halfW * (mode === "formulaic" ? 0.30 : 0.13);
+  let worst = 0;
+  for (let i = 0; i < moving; i++) worst = Math.max(worst, Math.hypot(ex[i], ey[i]));
+  if (worst > maxShift) {
+    const s = maxShift / worst;
+    for (let i = 0; i < moving; i++) { ex[i] *= s; ey[i] *= s; }
+    applied.clamped = worst / maxShift;
+  }
+
   for (let i = 0; i < moving; i++) { targets[i].x = pts[i].x + dx[i] + ex[i]; targets[i].y = pts[i].y + dy[i] + ey[i]; }
 
   // --- 6. The iris is a rigid disc ----------------------------------------

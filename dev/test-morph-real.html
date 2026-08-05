@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Morph on a real detected face (dev) — Facial Analysis Studio</title>
+  <!--
+    The other harness (test-morph.html) builds its own landmark set, which means
+    it can only ever check the maths against my idea of where a landmark sits.
+    It passed 59 assertions while the live site turned a real photograph into a
+    caricature, because the thing it could not test is the one that broke: what
+    MediaPipe's 478 indices actually mean on a real head, how dense they get
+    around the eye and lip, and how large the corrections come out when the
+    ideals are compared against a genuine face.
+
+    So this one runs the REAL detector. It renders a photogrammetric head scan
+    from assets/ through three.js, hands the frame to the real FaceLandmarker,
+    and drives the whole pipeline off whatever comes back. No hand-placed
+    points anywhere.
+
+    Needs the network (three.js, MediaPipe and the model all come from a CDN).
+    Not part of the site: /dev/* is 404'd in netlify.toml.
+  -->
+  <style>
+    body { font: 14px/1.6 ui-monospace, Menlo, monospace; padding: 24px; background: #0e0f13; color: #eceef2; }
+    .pass { color: #3ecf7a; } .fail { color: #ff5a5f; font-weight: 700; } .note { color: #7d8494; }
+    h1 { font-size: 1.5rem; margin: 0 0 6px; } h2 { font-size: .78rem; color: #9aa0ae; margin: 22px 0 6px; text-transform: uppercase; letter-spacing: .1em; }
+    .sum { margin: 18px 0; font-size: 1.1rem; }
+    .strip { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+    figure { margin: 0; } figure canvas { width: 230px; border-radius: 8px; display: block; background: #000; }
+    figcaption { font-size: .72rem; color: #9aa0ae; margin-top: 6px; text-align: center; }
+  </style>
+  <script type="importmap">
+    { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+    } }
+  </script>
+</head>
+<body>
+  <h1>Morph on a real detected face</h1>
+  <div id="out"></div>
+  <div class="sum" id="sum"></div>
+  <div class="strip" id="strip"></div>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+    import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+    // The scans are Draco-compressed, same as landing.js loads them.
+    const LOADER = new GLTFLoader().setDRACOLoader(new DRACOLoader()
+      .setDecoderPath("https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/libs/draco/"));
+
+    const v = "?cb=" + Date.now();
+    const [G, LM, M, A] = await Promise.all([
+      import("../geometry3d.js" + v), import("../landmarks.js" + v),
+      import("../morph.js" + v), import("../analysis.js" + v),
+    ]);
+    const { IDX } = LM;
+
+    const out = document.getElementById("out"), strip = document.getElementById("strip");
+    let pass = 0, fail = 0;
+    const assert = (name, cond, detail = "") => {
+      const ok = !!cond; ok ? pass++ : fail++;
+      out.insertAdjacentHTML("beforeend",
+        `<div class="${ok ? "pass" : "fail"}">${ok ? "✓" : "✗"} ${name}${ok ? "" : "  — " + detail}</div>`);
+    };
+    const note = (s) => out.insertAdjacentHTML("beforeend", `<div class="note">· ${s}</div>`);
+    const head = (s) => out.insertAdjacentHTML("beforeend", `<h2>${s}</h2>`);
+
+    // ---- render a head scan to a photo-sized canvas ----
+    const W = 540, H = 720;
+    async function renderHead(file, spin = 0, tip = 0) {
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x8a8f9c);
+      const gltf = await new Promise((res, rej) =>
+        LOADER.load(`../assets/${file}`, res, undefined, rej));
+      const root = gltf.scene;
+      root.rotation.y = spin;                 // to hunt for a frontal view
+      root.rotation.x = tip;
+      // Flat-ish lighting: the detector wants an evenly lit face, not drama.
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x606060, 2.2));
+      const key = new THREE.DirectionalLight(0xffffff, 1.6); key.position.set(0.4, 0.7, 1.6);
+      scene.add(key, new THREE.AmbientLight(0xffffff, 0.7));
+      scene.add(root);
+      // Frame the head: take the top of the bounding box, which for these busts
+      // and figures is the skull.
+      const box = new THREE.Box3().setFromObject(root);
+      const size = new THREE.Vector3(), ctr = new THREE.Vector3();
+      box.getSize(size); box.getCenter(ctr);
+      const headY = box.max.y - size.y * 0.11;
+      const headH = size.y * 0.22;
+      const cam = new THREE.PerspectiveCamera(28, W / H, 0.01, 100);
+      const dist = (headH * 1.6) / (2 * Math.tan((28 * Math.PI / 180) / 2));
+      cam.position.set(ctr.x, headY, box.max.z + dist);
+      cam.lookAt(ctr.x, headY, ctr.z);
+      const canvas = document.createElement("canvas");
+      canvas.width = W; canvas.height = H;
+      const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+      renderer.setPixelRatio(1); renderer.setSize(W, H, false);
+      renderer.render(scene, cam);
+      return canvas;
+    }
+
+    head("Detection");
+    const CANDIDATES = ["doryphoros.glb", "apollo-belvedere.glb", "kore.glb",
+                        "venus-de-milo.glb", "zeus-artemision.glb"];
+    let landmarker;
+    try { landmarker = await LM.getLandmarker(); }
+    catch (e) {
+      assert("MediaPipe FaceLandmarker loads", false, e.message + " (needs network)");
+      document.getElementById("sum").innerHTML = `<b class="fail">${pass} passed, ${fail} failed.</b>`;
+      throw e;
+    }
+    assert("MediaPipe FaceLandmarker loads", !!landmarker);
+
+    let photo = null, det = null, used = null;
+    // These are sculptures of people standing in contrapposto, so their heads
+    // are turned. The morph is a 2D illustration on a FRONTAL photo — QOVES ask
+    // for one too — so spin each model until the detector reports the smallest
+    // yaw, and test on that. A turned head is a separate question, handled by
+    // the pose attenuation in morph.js rather than pretended away here.
+    const RAD = Math.PI / 180;
+    const offFrontal = (d) => {
+      const p = G.headPose(d.transform);
+      return Math.abs(p.yaw) + Math.abs(p.pitch);
+    };
+    let best = null;
+    for (const file of CANDIDATES) {
+      let localBest = null;
+      // coarse yaw sweep, then refine the pitch at the best yaw
+      for (let deg = -40; deg <= 40; deg += 10) {
+        let c;
+        try { c = await renderHead(file, deg * RAD); }
+        catch (e) { note(`${file} failed to load: ${e.message}`); break; }
+        const d = LM.detectImage(landmarker, c);
+        if (!d) continue;
+        const off = offFrontal(d);
+        if (!localBest || off < localBest.off) localBest = { c, d, off, spin: deg, tip: 0 };
+      }
+      if (localBest) {
+        for (let tip = -25; tip <= 25; tip += 5) {
+          if (!tip) continue;
+          const c = await renderHead(file, localBest.spin * RAD, tip * RAD);
+          const d = LM.detectImage(landmarker, c);
+          if (!d) continue;
+          const off = offFrontal(d);
+          if (off < localBest.off) localBest = { c, d, off, spin: localBest.spin, tip };
+        }
+      }
+      const f = document.createElement("figure");
+      f.append(localBest ? localBest.c : document.createElement("canvas"));
+      f.insertAdjacentHTML("beforeend",
+        `<figcaption>${file}${localBest ? ` ✓ ${localBest.off.toFixed(0)}° off-frontal` : " — no face"}</figcaption>`);
+      strip.append(f);
+      if (localBest && (!best || localBest.off < best.off)) {
+        best = localBest; photo = localBest.c; det = localBest.d;
+        used = `${file} @ yaw ${localBest.spin}° pitch ${localBest.tip}°`;
+      }
+    }
+    assert("the real detector finds a face in a rendered head scan", !!det,
+      "none of the scans were detected — the morph could not be exercised on real landmarks");
+    if (!det) {
+      document.getElementById("sum").innerHTML = `<b class="fail">${pass} passed, ${fail} failed.</b>`;
+      throw new Error("no detection");
+    }
+    note(`using ${used}, ${det.landmarks.length} landmarks`);
+
+    // ---- app.js's pipeline, verbatim ----
+    const pxPts = G.toPixels(det.landmarks, W, H);
+    const { pts: norm } = G.poseNormalize(pxPts, IDX);
+    const pose = G.headPose(det.transform);
+    const iris = G.irisScale(pxPts, IDX);
+    const R = A.analyze({
+      F: norm, P: null, mmPerPx: iris ? iris.mmPerPx : null,
+      blendshapes: det.blendshapes, dims: { w: W, h: H },
+      meta: { sex: "m", age: 28, ethnicity: "european", goal: "natural", culture: "neutral",
+        accuracy: "quick", lifestyle: {}, pose, quality: G.qualityGate(pose), scaleSource: "iris" },
+    });
+    const frontal = R.results.filter((r) => r.side !== "profile");
+    note(`pose yaw ${pose.yaw.toFixed(1)}° pitch ${pose.pitch.toFixed(1)}° roll ${pose.roll.toFixed(1)}°`);
+    note(frontal.map((r) => `${r.key} ${(+r.value).toFixed(2)} [${r.range}]`).join("  ·  "));
+
+    const { points, tris, faceCount, freeCount } = M.buildWarpMesh(pxPts, W, H);
+    const targets = {
+      realistic: M.computeTargets(points, { faceCount, freeCount, metrics: frontal, mode: "realistic" }),
+      formulaic: M.computeTargets(points, { faceCount, freeCount, metrics: frontal, mode: "formulaic" }),
+    };
+
+    // ---- the invariants that matter, on real landmarks ----
+    head("On the real mesh");
+    const faceW = Math.abs(points[IDX.zygoL].x - points[IDX.zygoR].x);
+    const area = (a, b, c) => ((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) / 2;
+    const irisSet = new Set([IDX.irisRCenter, IDX.irisLCenter, ...IDX.irisRRing, ...IDX.irisLRing]);
+
+    for (const [mode, T] of Object.entries(targets)) {
+      const shifts = T.slice(0, faceCount)
+        .map((t, i) => Math.hypot(t.x - points[i].x, t.y - points[i].y));
+      const worst = Math.max(...shifts);
+      const mean = shifts.reduce((s, x) => s + x, 0) / shifts.length;
+      const ceiling = mode === "formulaic" ? 0.32 : 0.15;
+      assert(`${mode}: no landmark is flung across the face`, worst < faceW * ceiling,
+        `worst ${worst.toFixed(1)}px on a ${faceW.toFixed(0)}px face`);
+      note(`${mode}: mean shift ${mean.toFixed(1)}px, worst ${worst.toFixed(1)}px of ${faceW.toFixed(0)}px face width`);
+
+      let flipped = 0, worstArea = 1;
+      for (const [i, j, k] of tris) {
+        const a0 = area(points[i], points[j], points[k]);
+        if (Math.abs(a0) < 4) continue;
+        const a1 = area(T[i], T[j], T[k]);
+        if (Math.sign(a1) !== Math.sign(a0)) flipped++;
+        const ratio = Math.abs(a1) / Math.abs(a0);
+        worstArea = Math.max(worstArea, ratio, 1 / (ratio || 1e-9));
+      }
+      assert(`${mode}: nothing folds`, flipped === 0, `${flipped} inverted`);
+      assert(`${mode}: nothing is stretched beyond recognition`, worstArea < 4,
+        `worst area ratio ${worstArea.toFixed(2)}×`);
+
+      let strain = 0;
+      for (let i = 0; i < faceCount; i++) for (let j = i + 1; j < faceCount; j++) {
+        if (irisSet.has(i) !== irisSet.has(j)) continue;
+        const g = Math.hypot(points[i].x - points[j].x, points[i].y - points[j].y);
+        if (g < 2 || g > 0.05 * W) continue;
+        const d = Math.hypot((T[i].x - points[i].x) - (T[j].x - points[j].x),
+                             (T[i].y - points[i].y) - (T[j].y - points[j].y));
+        strain = Math.max(strain, d / g);
+      }
+      assert(`${mode}: neighbouring landmarks stay together`, strain < 1,
+        `worst neighbour strain ${strain.toFixed(2)}`);
+      note(`${mode}: worst area ratio ${worstArea.toFixed(2)}×, worst neighbour strain ${strain.toFixed(2)}`);
+
+      // every metric it moved, it moved the right way
+      const after = A.analyze({
+        F: G.poseNormalize(T.slice(0, faceCount), IDX).pts, P: null,
+        mmPerPx: iris ? iris.mmPerPx : null, blendshapes: [], dims: { w: W, h: H },
+        meta: { sex: "m", age: 28, ethnicity: "european", goal: "natural", culture: "neutral",
+          accuracy: "quick", lifestyle: {}, pose, quality: { notes: [] }, scaleSource: "iris" },
+      }).results;
+      const gap = (val, r) => val < r[0] ? r[0] - val : val > r[1] ? val - r[1] : 0;
+      // Tolerance proportional to the metric's own value: these are coupled
+      // edits solved together, so a metric sitting on its band edge jitters by
+      // a fraction of a percent. Anything past 2% is the solver actually
+      // pushing it the wrong way, which is the thing worth failing on.
+      const worse = frontal.filter((b) => {
+        if (!M.EDITS[b.key]) return false;
+        const a = after.find((x) => x.key === b.key);
+        if (!a) return false;
+        return gap(a.value, b.range) > gap(b.value, b.range) + Math.abs(b.value) * 0.02;
+      });
+      assert(`${mode}: no metric is driven further from its ideal`,
+        worse.length === 0, worse.map((r) => r.key).join(", "));
+    }
+    assert("realistic is the gentler of the two",
+      targets.realistic.slice(0, faceCount).reduce((s, t, i) => s + Math.hypot(t.x - points[i].x, t.y - points[i].y), 0) <
+      targets.formulaic.slice(0, faceCount).reduce((s, t, i) => s + Math.hypot(t.x - points[i].x, t.y - points[i].y), 0));
+
+    // ---- render, and eyeball it ----
+    head("Rendered");
+    const img = await new Promise((res) => {
+      const i = new Image(); i.onload = () => res(i); i.src = photo.toDataURL("image/png");
+    });
+    const show = (label, T, t) => {
+      const c = document.createElement("canvas");
+      c.width = W; c.height = H;
+      M.renderMorph(c.getContext("2d"), img, points, T || points, tris, t);
+      const f = document.createElement("figure");
+      f.append(c);
+      f.insertAdjacentHTML("beforeend", `<figcaption>${label}</figcaption>`);
+      strip.append(f);
+      return c;
+    };
+    show("real (t=0)", targets.realistic, 0);
+    show("realistic (t=1)", targets.realistic, 1);
+    show("formulaic (t=1)", targets.formulaic, 1);
+
+    document.getElementById("sum").innerHTML =
+      `<b class="${fail ? "fail" : "pass"}">${pass} passed, ${fail} failed.</b>`;
+    window.__realCheck = { pass, fail, points, targets, tris, faceCount, freeCount, R, frontal, W, H, IDX, used };
+    console.log(`Real-face morph check: ${pass} passed, ${fail} failed.`);
+  </script>
+</body>
+</html>

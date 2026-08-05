@@ -78,12 +78,21 @@ Self-checks for the hand-built geometry in `landing.js`: the chamfered unit box
 dimensions). `test.html` is the 26-assert analysis-engine suite (open it in a
 browser; needs no camera).
 
-`dev/test-morph.html` is the corrected-face morph's suite (59 asserts). Open it
+`dev/test-morph.html` is the corrected-face morph's suite (61 asserts). Open it
 in a browser; needs no camera. It builds a synthetic face at phone resolution,
 downscales it exactly as `app.js` does, and runs the real
 `buildWarpMesh`/`computeTargets`/`renderMorph`. **Every ideal-driven edit is
 checked by re-measuring the metric through `analysis.js`'s own `compute()` on
 the warped landmarks**, so a sign error in any editor fails here.
+
+`dev/test-morph-real.html` is the one that matters: it renders a photogrammetric
+head scan from `assets/`, hands it to the **real** MediaPipe detector, and drives
+the whole morph off whatever comes back. **The synthetic harness passed 59
+assertions while the live site turned a real photograph into a caricature** — it
+places its own landmarks, so it can only ever check the maths against my idea of
+where a landmark sits, never against MediaPipe's real index semantics or the size
+of the corrections a genuine face demands. Sculptures stand in contrapposto, so
+it sweeps yaw and pitch to find a frontal view before testing. Needs the network.
 
 `dev/report-preview.html` renders the report from a synthetic head.
 
@@ -100,7 +109,7 @@ Built to QOVES' described pipeline (see "What QOVES actually does" below).
 1. **Measured, not filtered.** Each frontal metric's distance to its ideal band
    (`analysis.js` `METRICS[].ideal`, shifted for sex and ethnicity by
    `idealFor`) becomes a geometric edit on the landmarks that define it —
-   canthal tilt, lid aperture (scleral show), brow height, nose and mouth width,
+   canthal tilt, lid aperture (scleral show), nose and mouth width,
    lip fullness, bigonial width, FWHR — plus the two classical balance rules
    and a midline symmetrization. `EDITS` holds one editor per metric.
    Because a soft bump always lands short, each edit is **re-measured through
@@ -113,7 +122,7 @@ Built to QOVES' described pipeline (see "What QOVES actually does" below).
    pinned frame. Without the middle band a widened jaw was absorbed by a few
    enormous triangles and the surroundings smeared.
 
-Five things that are load-bearing, each of which was a visible bug:
+Seven things that are load-bearing, each of which was a visible bug:
 
 - **`renderMorph` must draw the source into the `(0,0,W,H)` box**, never
   `drawImage(image, 0, 0)`. Landmarks live in the ≤`MAX_SIDE` canvas space while
@@ -137,6 +146,20 @@ Five things that are load-bearing, each of which was a visible bug:
   and it made the whole warp better conditioned (worst triangle distortion fell
   from 7.1× to 2.7×). They are also under-relaxed (`GEO_STEP`) because the goals
   are solved together while each bump still nudges the others.
+
+- **Nothing is unbounded.** Every edit is capped (`maxBump`), every bump's radius
+  is widened so its amplitude can never exceed half of it (a Gaussian folds once
+  A approaches r), the solver stops a metric that has stopped making progress,
+  and the finished edit field is uniformly scaled to `maxShift` if anything is
+  still too far. Without these the solver read the same residual every round and
+  piled displacement on: a real photo came back with black slabs for eyebrows,
+  and a deliberately impossible demand moved a landmark 233px across a 276px
+  face. `browPosition` had to be dropped entirely — see `EDITS`.
+- **The balance rules run BEFORE the metric corrections, and the metrics get two
+  passes after the rules have settled.** Whichever moves last wins: the fifths
+  rule slides the canthi sideways, and tilt is rise over run, so narrowing the
+  run re-tilts the eye. Run the other way round, canthal tilt on a real face went
+  from -1.3° to +12.7° — straight through its ideal band and out the far side.
 
 The iris is translated rigidly with its eye — its ring vertices are ordered
 around the circle, so index *k* is the same angle on **both** eyes and pairing

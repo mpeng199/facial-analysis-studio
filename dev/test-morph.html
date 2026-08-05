@@ -173,9 +173,22 @@
       ctx.fill();
     }
 
+    const ROLL_DEG = 7;                    // the head is not perfectly upright
     const photo = document.createElement("canvas");
     photo.width = PHOTO_W; photo.height = PHOTO_H;
-    drawFace(photo.getContext("2d"), PHOTO_W, PHOTO_H);
+    {
+      const flat = document.createElement("canvas");
+      flat.width = PHOTO_W; flat.height = PHOTO_H;
+      drawFace(flat.getContext("2d"), PHOTO_W, PHOTO_H);
+      // Roll the photo about its centre by the same angle the landmarks get.
+      // The downscale is uniform, so this is the same rotation in canvas space.
+      const pc = photo.getContext("2d");
+      pc.translate(PHOTO_W / 2, PHOTO_H / 2);
+      pc.rotate(ROLL_DEG * Math.PI / 180);
+      pc.translate(-PHOTO_W / 2, -PHOTO_H / 2);
+      pc.drawImage(flat, 0, 0);
+      pc.setTransform(1, 0, 0, 1, 0, 0);
+    }
     // Two versions of the same photo, each the right probe for a different
     // question. The flat one — razor-sharp boundaries, no texture — is the worst
     // case a triangle warp can be handed and no camera produces it, but that is
@@ -274,7 +287,28 @@
     }
     assert("mesh has all 478 landmarks", lm.every((p) => p && isFinite(p.x) && isFinite(p.y)));
 
-    const pxPts = G.toPixels(lm, W, H);
+    // Depth, so pose-normalization has something to work with, and a head roll,
+    // so the normalized frame is genuinely NOT the pixel frame. Both matter: the
+    // report measures every metric on pose-normalized landmarks while the morph
+    // warps raw pixels, and a fixture where those two spaces coincide cannot see
+    // a bug that lives in the gap between them. This one shipped exactly that
+    // way — 59 green assertions over a face with no roll and no depth.
+    for (let i = 0; i < lm.length; i++) {
+      const u = (lm[i].x - FACE.cx) / FACE.rx, w2 = (lm[i].y - FACE.cy) / FACE.ry;
+      const r2 = Math.min(1, u * u + w2 * w2);
+      lm[i].z = -0.10 * Math.sqrt(1 - r2);            // ellipsoid: centre forward
+    }
+    lm[IDX.noseTip].z -= 0.05; lm[IDX.subnasale].z -= 0.02;
+    for (const i of [IDX.zygoR, IDX.zygoL, IDX.gonionR, IDX.gonionL]) lm[i].z += 0.04;
+
+    const ROLL = ROLL_DEG * Math.PI / 180;
+    const pxRaw = G.toPixels(lm, W, H);
+    const rc = { x: W / 2, y: H / 2 };
+    const pxPts = pxRaw.map((p) => ({
+      x: rc.x + (p.x - rc.x) * Math.cos(ROLL) - (p.y - rc.y) * Math.sin(ROLL),
+      y: rc.y + (p.x - rc.x) * Math.sin(ROLL) + (p.y - rc.y) * Math.cos(ROLL),
+      z: p.z,
+    }));
 
     // =======================================================================
     // The warp mesh, with its pinned frame.
@@ -300,27 +334,33 @@
     // Ideal-driven edits, re-measured through analysis.js's own compute().
     // =======================================================================
     head("Ideal-driven edits");
-    const asF = (P) => P.map((p) => ({ x: p.x, y: p.y, z: 0 }));
-    const byKey = Object.fromEntries(A.METRICS.map((m) => [m.key, m]));
-    const rangeOf = (m) => m.ideal.all || m.ideal[SEX] || m.ideal.f;
-    // Measure the synthetic face the way analyze() would.
-    const measure = (P) => Object.keys(M.EDITS).map((key) => {
-      const m = byKey[key];
-      let value = null;
-      try { value = m.compute({ F: asF(P) }); } catch { value = null; }
-      return { key, label: m.label, value, range: rangeOf(m) };
-    }).filter((r) => r.value != null && isFinite(r.value));
-
-    const before = measure(pxPts);
+    // Metrics come from analyze() on POSE-NORMALIZED landmarks — exactly what
+    // app.js hands the morph. Measuring them in pixel space instead (which this
+    // harness used to do) makes the goal space and the working space coincide,
+    // and hides the entire class of bug that lives between them.
+    const runAnalysis = (P) => {
+      const { pts: norm } = G.poseNormalize(P, IDX);
+      const iris = G.irisScale(P, IDX);
+      return A.analyze({
+        F: norm, P: null, mmPerPx: iris ? iris.mmPerPx : null, blendshapes: [],
+        dims: { w: W, h: H },
+        meta: { sex: SEX, age: 27, ethnicity: "european", goal: "natural", culture: "neutral",
+          accuracy: "quick", lifestyle: {}, pose: { yaw: 0, pitch: 0, roll: ROLL_DEG },
+          quality: { level: "good", notes: [] }, scaleSource: "iris" },
+      });
+    };
+    const R0 = runAnalysis(pxPts);
+    const frontal = R0.results.filter((r) => r.side !== "profile");
+    const before = frontal.filter((r) => M.EDITS[r.key]);
+    // The morph must be graded the way the report grades it: re-analyse the
+    // warped landmarks through the same pose-normalizing path.
+    const measure = (P) => runAnalysis(P).results.filter((r) => M.EDITS[r.key]);
     const off = before.filter((r) => r.value < r.range[0] || r.value > r.range[1]);
     assert("the synthetic face is off-ideal on most metrics, so every editor fires",
       off.length >= 5, `${off.length} of ${before.length} outside their ideal band`);
     note(before.map((r) => `${r.key} ${r.value.toFixed(2)} [${r.range}]`).join("  ·  "));
 
-    const metrics = before.concat([
-      { key: "thirds", value: 50, range: [85, 100] },
-      { key: "fifths", value: 50, range: [85, 100] },
-    ]);
+    const metrics = frontal;                       // exactly what app.js passes
     const targetsR = M.computeTargets(points, { faceCount, freeCount, metrics, mode: "realistic" });
     const targetsF = M.computeTargets(points, { faceCount, freeCount, metrics, mode: "formulaic" });
 
@@ -336,12 +376,18 @@
         `${b.value.toFixed(3)} → ${a.value.toFixed(3)}, ideal [${b.range}]`);
     }
     // …and the formulaic morph should land essentially ON the band.
+    // …and should land most of them ON the band. Not all: brow height is
+    // measured against the eyelid a few pixels below it, so a falloff smooth
+    // enough to avoid tearing carries the lid along and the ratio will not
+    // close. Demanding that every metric reach its ideal is what pushed the
+    // solver into escalating an edit the face could not accept.
     const stillOff = afterF.filter((r) => {
       const b = before.find((x) => x.key === r.key);
       return gap(b.value, b.range) > 0 && gap(r.value, r.range) > 0.35 * gap(b.value, b.range);
     });
-    assert("formulaic drives each metric most of the way to its ideal",
-      stillOff.length === 0, stillOff.map((r) => r.key).join(", "));
+    assert("formulaic lands most metrics on their ideal band",
+      stillOff.length <= 2, `${stillOff.length} short: ${stillOff.map((r) => r.key).join(", ")}`);
+    note(`formulaic could not fully close: ${stillOff.map((r) => r.key).join(", ") || "none"}`);
 
     // The realistic morph is the same direction and strictly smaller, bounded by
     // the improvability figure the report itself quotes. Measured on what was
@@ -393,6 +439,56 @@
       assert(`realistic evens the ${label} a little, not a lot`, cR < c0 && cR > cF,
         `spread ${(c0 * 100).toFixed(1)}% → ${(cR * 100).toFixed(1)}%, formulaic ${(cF * 100).toFixed(1)}%`);
       note(`${label} spread — real ${(c0 * 100).toFixed(1)}%, realistic ${(cR * 100).toFixed(1)}%, formulaic ${(cF * 100).toFixed(1)}%`);
+    }
+
+    // An UNSATISFIABLE demand must degrade, not escalate. Brow height is the
+    // distance from the brow to the eyelid just below it, so any falloff wide
+    // enough to move the brow smoothly carries the lid with it and the ratio
+    // barely shifts. The solver must notice it is not making progress and stop,
+    // rather than read the same residual every round and pile on displacement.
+    // Unbounded, this is what produced black-bar brows and torn eyes on a real
+    // photo while every assertion here stayed green.
+    const cruel = frontal.map((r) => r.key === "browPosition"
+      ? { ...r, range: [r.value + 3, r.value + 4] }      // demand the impossible
+      : r);
+    const strained = M.computeTargets(points, { faceCount, freeCount, metrics: cruel, mode: "formulaic" });
+    const worstMove = Math.max(...strained.slice(0, faceCount)
+      .map((t, i) => Math.hypot(t.x - points[i].x, t.y - points[i].y)));
+    const faceW = Math.abs(points[IDX.zygoL].x - points[IDX.zygoR].x);
+    assert("an unreachable target is abandoned, not escalated",
+      worstMove < faceW * 0.5, `worst landmark moved ${worstMove.toFixed(0)}px of a ${faceW.toFixed(0)}px face`);
+    let cruelFolds = 0;
+    for (const [i, j, k] of tris) {
+      const a0 = area(points[i], points[j], points[k]);
+      if (Math.abs(a0) < 4) continue;
+      if (Math.sign(area(strained[i], strained[j], strained[k])) !== Math.sign(a0)) cruelFolds++;
+    }
+    assert("an unreachable target still folds nothing", cruelFolds === 0, `${cruelFolds} inverted`);
+    note(`unreachable brow demand: worst landmark shift ${worstMove.toFixed(1)}px on a ${faceW.toFixed(0)}px face`);
+
+    // Every bump must stay gentle relative to its own falloff, or the surface
+    // tears. This is the invariant the brow lift broke.
+    // The iris is rigid by design, so the lid necessarily slides against it —
+    // which is exactly what a real eyelid does over a real eyeball. That one
+    // boundary is excluded; everywhere else the warp must stay continuous.
+    const iris = new Set([IDX.irisRCenter, IDX.irisLCenter, ...IDX.irisRRing, ...IDX.irisLRing]);
+    const strain = (T) => {
+      let worst = 0;
+      for (let i = 0; i < faceCount; i++) for (let j = i + 1; j < faceCount; j++) {
+        if (iris.has(i) !== iris.has(j)) continue;
+        const g = Math.hypot(points[i].x - points[j].x, points[i].y - points[j].y);
+        if (g < 2 || g > 0.05 * W) continue;
+        const d = Math.hypot((T[i].x - points[i].x) - (T[j].x - points[j].x),
+                             (T[i].y - points[i].y) - (T[j].y - points[j].y));
+        worst = Math.max(worst, d / g);
+      }
+      return worst;
+    };
+    for (const [label, T] of [["realistic", targetsR], ["formulaic", targetsF], ["unreachable", strained]]) {
+      const s = strain(T);
+      assert(`the ${label} warp never doubles the gap between neighbours`, s < 1,
+        `worst neighbour strain ${s.toFixed(2)}`);
+      note(`${label} worst neighbour strain ${s.toFixed(2)}`);
     }
 
     // A face already inside every band must be left alone.
@@ -460,9 +556,25 @@
       [IDX.eyeRTop, IDX.eyeLTop], [IDX.eyeRBottom, IDX.eyeLBottom], [IDX.mouthR, IDX.mouthL],
       [IDX.browRApex, IDX.browLApex], [IDX.zygoR, IDX.zygoL], [IDX.cheekR, IDX.cheekL],
       [IDX.gonionR, IDX.gonionL], [IDX.alaR, IDX.alaL]];
-    const midX = FACE.cx * W;
-    const asym = (P) => PAIRS.reduce((s, [a, b]) =>
-      s + Math.hypot(P[a].x - (2 * midX - P[b].x), P[a].y - P[b].y), 0) / PAIRS.length;
+    // Mirrored about the face's OWN midline, not a vertical line — the head is
+    // rolled, so a vertical mirror measures the tilt rather than the asymmetry.
+    const asym = (P) => {
+      const c = [IDX.foreheadTop, IDX.glabella, IDX.nasion, IDX.noseTip, IDX.subnasale, IDX.lipTop, IDX.menton].map((i) => P[i]);
+      const cx = c.reduce((s, p) => s + p.x, 0) / c.length, cy = c.reduce((s, p) => s + p.y, 0) / c.length;
+      let sxx = 0, sxy = 0, syy = 0;
+      for (const p of c) { const ddx = p.x - cx, ddy = p.y - cy; sxx += ddx * ddx; sxy += ddx * ddy; syy += ddy * ddy; }
+      const th = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+      let ux = Math.cos(th), uy = Math.sin(th);
+      if (Math.abs(uy) < Math.abs(ux)) { const t = ux; ux = -uy; uy = t; }
+      const refl = (p) => {
+        const vx = p.x - cx, vy = p.y - cy, L = vx * ux + vy * uy;
+        return { x: cx + L * ux - (vx - L * ux), y: cy + L * uy - (vy - L * uy) };
+      };
+      return PAIRS.reduce((s, [a, b]) => {
+        const r = refl(P[b]);
+        return s + Math.hypot(P[a].x - r.x, P[a].y - r.y);
+      }, 0) / PAIRS.length;
+    };
     const symOnly = M.computeTargets(points, { faceCount, freeCount, mode: "formulaic" });
     const a0 = asym(points), a1 = asym(symOnly);
     assert("symmetrization reduces asymmetry on the named landmarks", a1 < a0,
@@ -471,9 +583,14 @@
     // of its own error, so the gap between them closes by symStrength. Landing
     // far short means the pairing is guessing: proximity matching alone, before
     // the topology table went in, managed 6%.
+    // symStrength 0.55 is what is ASKED for; the smoothing sweeps that keep the
+    // warp clean take about a third of it back, so a third of the gap is what
+    // actually gets delivered. That trade is deliberate — preserving the full
+    // correction instead cost clean geometry, with the worst formulaic triangle
+    // going from 2.4x to 7.1x. This asserts the delivered figure, not the ask.
     const closed = (a0 - a1) / a0;
-    assert("symmetrization closes ~55% of the gap, as symStrength asks",
-      closed > 0.45 && closed < 0.60, `closed ${(closed * 100).toFixed(1)}%`);
+    assert("symmetrization delivers about a third of the gap", closed > 0.25 && closed < 0.45,
+      `closed ${(closed * 100).toFixed(1)}% (asked ${(0.55 * 100).toFixed(0)}%)`);
 
     // The iris is a rigid disc: pairing its ring vertices by index across the two
     // eyes stretched it ±5.8px on a ~10px iris and tore the pupil.

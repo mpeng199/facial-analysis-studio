@@ -301,6 +301,7 @@ export function buildReportHTML(R) {
           <label><input type="radio" name="morphMode" value="formulaic"> Formulaic</label>
         </div>
         <figcaption>Your own photo, warped — nothing here is generated. Drag to see each measurement below moved toward the ideal range for your sex and ethnicity: canthal tilt, lid aperture, brow height, nose and mouth width, lip fullness, jaw width, the vertical thirds and the horizontal fifths, plus a soft correction toward your own midline. It's an illustration of the direction, not a preview of a result.
+        <span class="morph-note" id="morphPoseNote"></span>
         <span class="morph-note" id="morphModeNote">Bounded to what soft-tissue work, dermatology and grooming actually move — every edit is scaled by the same improvability figure the protocol above uses.</span></figcaption>
       </figure>
     </div>`;
